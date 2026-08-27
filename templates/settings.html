@@ -49,6 +49,16 @@
     <label>매도 비율 (%) <span class="hint">— 매도 신호 시 보유 수량의 몇 %를 팔지. 100 = 전량</span></label>
     <input type="number" name="sell_percent" min="1" max="100" value="{{ env.get('SELL_PERCENT', '100') }}">
 
+    <h2 style="margin-top:26px">손절 / 익절 (선택)</h2>
+    <p class="muted">보유 종목의 수익률이 기준에 닿으면 전량 시장가 매도합니다.
+       0 이면 사용하지 않습니다. 자동주문이 꺼져 있으면 매도 없이 알림만 보냅니다.</p>
+
+    <label>손절 기준 (%) <span class="hint">— 예: 3 이면 수익률 -3% 이하일 때 전량 매도</span></label>
+    <input type="number" name="stop_loss" min="0" max="50" step="0.5" value="{{ env.get('STOP_LOSS_PCT', '0') }}">
+
+    <label>익절 기준 (%) <span class="hint">— 예: 5 이면 수익률 +5% 이상일 때 전량 매도</span></label>
+    <input type="number" name="take_profit" min="0" max="100" step="0.5" value="{{ env.get('TAKE_PROFIT_PCT', '0') }}">
+
     <label>확인 주기 (초)</label>
     <input type="number" name="interval" min="10" value="{{ env.get('TRADE_INTERVAL_SEC', '60') }}">
 

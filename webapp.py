@@ -118,6 +118,9 @@ class AppState:
                 analysis = analyze(closes, rules.get("params"))
                 signal, enabled = decide(analysis, rules)
                 enabled = enabled + price_target_conditions(code, price, rules)
+                holding = holdings.get(code) or {"qty": 0, "avg_price": 0.0}
+                held, avg = holding["qty"], holding["avg_price"]
+                pnl = ((price - avg) / avg * 100) if held > 0 and avg > 0 else None
                 symbols.append({
                     "code": code,
                     "price": f"{price:,}",
@@ -125,7 +128,8 @@ class AppState:
                     "reasons": [c.text for c in enabled],
                     "summary": analysis.summary,
                     "values": analysis.values,
-                    "held": holdings.get(code, 0),
+                    "held": held,
+                    "pnl": f"{pnl:+.1f}%" if pnl is not None else None,
                 })
             except KisApiError as e:
                 symbols.append({"code": code, "error": str(e)})
@@ -172,6 +176,8 @@ def settings_page():
             f"ORDER_AMOUNT={form.get('order_amount', '100000').strip() or '100000'}\n"
             f"ORDER_PERCENT={form.get('order_percent', '10').strip() or '10'}\n"
             f"SELL_PERCENT={form.get('sell_percent', '100').strip() or '100'}\n"
+            f"STOP_LOSS_PCT={form.get('stop_loss', '0').strip() or '0'}\n"
+            f"TAKE_PROFIT_PCT={form.get('take_profit', '0').strip() or '0'}\n"
             f"TRADE_INTERVAL_SEC={form.get('interval', '60').strip() or '60'}\n"
             f"AUTO_ORDER={'true' if form.get('auto_order') else 'false'}\n"
             f"TELEGRAM_BOT_TOKEN={tg_token}\n"

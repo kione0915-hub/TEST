@@ -73,7 +73,20 @@ class Trader:
             return 0
         return min(held, max(1, int(held * self.s.sell_percent / 100)))
 
-    def check_symbol(self, symbol: str, holdings: dict[str, int], rules: dict,
+    def risk_condition(self, price: int, held: int, avg_price: float) -> tuple | None:
+        """손절/익절 판정. (조건키, 수익률, 설명) 또는 None."""
+        if held <= 0 or avg_price <= 0:
+            return None
+        pnl = (price - avg_price) / avg_price * 100
+        if self.s.stop_loss_pct > 0 and pnl <= -self.s.stop_loss_pct:
+            return ("stop_loss", pnl,
+                    f"손절 기준 도달 (수익률 {pnl:+.1f}% ≤ -{self.s.stop_loss_pct:g}%)")
+        if self.s.take_profit_pct > 0 and pnl >= self.s.take_profit_pct:
+            return ("take_profit", pnl,
+                    f"익절 기준 도달 (수익률 {pnl:+.1f}% ≥ +{self.s.take_profit_pct:g}%)")
+        return None
+
+    def check_symbol(self, symbol: str, holdings: dict, rules: dict,
                      cash: int = 0) -> dict:
         closes = [float(c) for c in self.client.get_daily_closes(symbol)]
         price = self.client.get_current_price(symbol)
@@ -81,9 +94,17 @@ class Trader:
         analysis = analyze(closes, rules.get("params"))
         signal, enabled = decide(analysis, rules)
         enabled = enabled + price_target_conditions(symbol, price, rules)
-        held = holdings.get(symbol, 0)
-        logger.info("[%s] 현재가 %s원 / 신호: %s / 보유: %d주",
-                    symbol, f"{price:,}", signal.value, held)
+        holding = holdings.get(symbol) or {"qty": 0, "avg_price": 0.0}
+        held, avg_price = holding["qty"], holding["avg_price"]
+        pnl_pct = ((price - avg_price) / avg_price * 100) if held > 0 and avg_price > 0 else None
+
+        risk = self.risk_condition(price, held, avg_price)
+        if risk:
+            enabled = enabled + [Condition(risk[0], "sell", risk[2])]
+
+        logger.info("[%s] 현재가 %s원 / 신호: %s / 보유: %d주%s",
+                    symbol, f"{price:,}", signal.value, held,
+                    f" (수익률 {pnl_pct:+.1f}%)" if pnl_pct is not None else "")
 
         # '새로 발생한' 조건만 알림 (조건이 유지되는 동안은 다시 알리지 않음)
         active_keys = {c.key for c in enabled}
@@ -93,7 +114,14 @@ class Trader:
                          [c for c in enabled if c.key in new_keys], analysis.summary)
         self._active[symbol] = active_keys
 
-        if self.s.auto_order:
+        if self.s.auto_order and risk and held > 0:
+            # 손절/익절은 지표 신호보다 우선하며 전량 매도한다
+            label = "손절" if risk[0] == "stop_loss" else "익절"
+            self.client.sell(symbol, held)
+            self.notifier.send(
+                f"✂️ [{label} 매도] {symbol} 전량 {held}주 시장가 매도\n"
+                f"매입가 {avg_price:,.0f}원 -> 현재가 {price:,}원 (수익률 {risk[1]:+.1f}%)")
+        elif self.s.auto_order:
             if signal is Signal.BUY and held == 0:
                 qty = self.buy_qty(price, cash)
                 if qty > 0:
@@ -122,6 +150,7 @@ class Trader:
             "summary": analysis.summary,
             "values": analysis.values,
             "held": held,
+            "pnl": f"{pnl_pct:+.1f}%" if pnl_pct is not None else None,
         }
 
     def _notify(self, symbol: str, price: int, held: int,

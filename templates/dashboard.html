@@ -107,8 +107,11 @@ function renderSnapshot(snap) {
     const detail = reasons ? reasons + "<br><span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>"
                            : "<span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>";
     const qty = prevQty[s.code] ?? 1;
+    const pnlHtml = s.pnl
+      ? `<br><span class="${s.pnl.startsWith("+") ? "sig-buy" : "sig-sell"}" style="font-size:12.5px">${s.pnl}</span>`
+      : "";
     return `<tr><td><b>${s.code}</b></td><td>${s.price}원</td>
-            <td class="${cls}">${s.signal}</td><td>${detail}</td><td>${s.held}주</td>
+            <td class="${cls}">${s.signal}</td><td>${detail}</td><td>${s.held}주${pnlHtml}</td>
             <td style="white-space:nowrap;">
               <input type="number" class="qty-input" data-code="${s.code}" min="1" max="10000"
                      value="${qty}" style="width:58px; padding:6px;">

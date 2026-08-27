@@ -37,8 +37,8 @@ def main() -> None:
         summary = balance["summary"]
         print(f"[{settings.mode}] 예수금: {summary.get('dnca_tot_amt')}원 "
               f"/ 총평가금액: {summary.get('tot_evlu_amt')}원")
-        for code, qty in balance["holdings"].items():
-            print(f"  보유: {code} x {qty}주")
+        for code, h in balance["holdings"].items():
+            print(f"  보유: {code} x {h['qty']}주 (매입평균 {h['avg_price']:,.0f}원)")
         return
 
     if args and args[0] == "price":

@@ -32,6 +32,8 @@ class Settings:
     order_amount: int = 100000   # amount 방식: 1회 매수 금액 (원)
     order_percent: float = 10.0  # percent 방식: 예수금의 몇 %
     sell_percent: float = 100.0  # 매도 신호 시 보유 수량의 몇 % 매도 (100=전량)
+    stop_loss_pct: float = 0.0    # 손절: 수익률이 -X% 이하면 전량 매도 (0=사용 안 함)
+    take_profit_pct: float = 0.0  # 익절: 수익률이 +Y% 이상이면 전량 매도 (0=사용 안 함)
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
@@ -74,6 +76,8 @@ def load_settings() -> Settings:
         order_amount=int(os.getenv("ORDER_AMOUNT", "100000")),
         order_percent=float(os.getenv("ORDER_PERCENT", "10")),
         sell_percent=float(os.getenv("SELL_PERCENT", "100")),
+        stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0")),
+        take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0")),
         auto_order=os.getenv("AUTO_ORDER", "true").strip().lower() in ("true", "1", "y", "yes"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),

@@ -271,7 +271,10 @@ class KisClient:
             },
         )
         holdings = {
-            row["pdno"]: int(row["hldg_qty"])
+            row["pdno"]: {
+                "qty": int(row["hldg_qty"]),
+                "avg_price": float(row.get("pchs_avg_pric") or 0),  # 매입평균가
+            }
             for row in data.get("output1", [])
             if int(row.get("hldg_qty", 0)) > 0
         }
