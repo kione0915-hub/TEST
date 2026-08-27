@@ -114,7 +114,6 @@ class Trader:
             except KisApiError as e:
                 logger.error("[%s] 처리 실패: %s", symbol, e)
                 rows.append({"code": symbol, "error": str(e)})
-            time.sleep(0.5)  # API 호출 유량 제한 보호
         snapshot = {
             "updated_at": datetime.now(KST).strftime("%H:%M:%S"),
             "cash": f"{int(summary.get('dnca_tot_amt', 0)):,}",

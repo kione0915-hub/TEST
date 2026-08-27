@@ -8,6 +8,7 @@
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 TOKEN_CACHE_FILE = Path(".token_cache.json")  # .gitignore 등록됨
+RATE_LIMIT_CODE = "EGW00201"  # 초당 거래건수 초과
 
 
 class KisApiError(RuntimeError):
@@ -31,6 +33,18 @@ class KisClient:
         self._token: str | None = None
         self._token_expire_at: float = 0.0
         self._session = requests.Session()
+        # 호출 유량 제한: 모의투자는 초당 2건이라 여유 있게 0.6초 간격을 지킨다
+        self._min_interval = 0.6 if settings.is_paper else 0.1
+        self._throttle_lock = threading.Lock()
+        self._last_call = 0.0
+
+    def _throttle(self) -> None:
+        """API 호출 간 최소 간격을 보장한다 (여러 스레드에서 호출돼도 안전)."""
+        with self._throttle_lock:
+            wait = self._min_interval - (time.monotonic() - self._last_call)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.monotonic()
 
     # ---------- 인증 ----------
 
@@ -90,6 +104,7 @@ class KisClient:
         }
 
     def _hashkey(self, body: dict) -> str:
+        self._throttle()
         resp = self._session.post(
             f"{self.s.base_url}/uapi/hashkey",
             headers={
@@ -107,25 +122,33 @@ class KisClient:
 
     # ---------- 공통 요청 ----------
 
+    def _request(self, method: str, path: str, headers: dict, **kwargs) -> dict:
+        """유량 제한을 지키며 요청하고, 한도 초과(EGW00201)면 자동 재시도한다."""
+        data = {}
+        for attempt in range(4):
+            self._throttle()
+            resp = self._session.request(
+                method, f"{self.s.base_url}{path}", headers=headers, timeout=10, **kwargs
+            )
+            data = resp.json()
+            if resp.status_code == 200 and data.get("rt_cd") == "0":
+                return data
+            if data.get("msg_cd") == RATE_LIMIT_CODE:
+                wait = 1.0 + attempt
+                logger.warning("호출 한도 초과(%s), %.0f초 후 재시도... (%d/3)",
+                               RATE_LIMIT_CODE, wait, attempt + 1)
+                time.sleep(wait)
+                continue
+            break
+        raise KisApiError(f"API 오류 [{path}]: {data.get('msg_cd')} {data.get('msg1')}")
+
     def _get(self, path: str, tr_id: str, params: dict) -> dict:
-        resp = self._session.get(
-            f"{self.s.base_url}{path}", headers=self._headers(tr_id), params=params, timeout=10
-        )
-        data = resp.json()
-        if resp.status_code != 200 or data.get("rt_cd") != "0":
-            raise KisApiError(f"API 오류 [{path}]: {data.get('msg_cd')} {data.get('msg1')}")
-        return data
+        return self._request("GET", path, self._headers(tr_id), params=params)
 
     def _post(self, path: str, tr_id: str, body: dict) -> dict:
         headers = self._headers(tr_id)
         headers["hashkey"] = self._hashkey(body)
-        resp = self._session.post(
-            f"{self.s.base_url}{path}", headers=headers, json=body, timeout=10
-        )
-        data = resp.json()
-        if resp.status_code != 200 or data.get("rt_cd") != "0":
-            raise KisApiError(f"API 오류 [{path}]: {data.get('msg_cd')} {data.get('msg1')}")
-        return data
+        return self._request("POST", path, headers, json=body)
 
     # ---------- 시세 ----------
 
