@@ -12,5 +12,6 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
+python3 updater.py
 python3 -m pip install -r requirements.txt --quiet
 python3 webapp.py

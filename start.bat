@@ -12,11 +12,13 @@ if not errorlevel 1 goto haspython
 goto nopython
 
 :haspy
+py updater.py
 py -m pip install -r requirements.txt --quiet
 py webapp.py
 goto end
 
 :haspython
+python updater.py
 python -m pip install -r requirements.txt --quiet
 python webapp.py
 goto end
