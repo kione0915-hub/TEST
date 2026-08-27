@@ -308,6 +308,83 @@ def api_rules():
     })
 
 
+def _aggregate_minutes(candles: list[dict], minutes: int) -> list[dict]:
+    """1분봉을 N분봉으로 합친다."""
+    if minutes <= 1:
+        return candles
+    buckets: dict[str, dict] = {}
+    for c in candles:
+        t = c["time"]
+        slot = int(t[2:4]) // minutes * minutes
+        key = f"{t[:2]}{slot:02d}00"
+        b = buckets.get(key)
+        if b is None:
+            buckets[key] = {**c, "time": key}
+        else:
+            b["high"] = max(b["high"], c["high"])
+            b["low"] = min(b["low"], c["low"])
+            b["close"] = c["close"]
+            b["volume"] += c["volume"]
+    return [buckets[k] for k in sorted(buckets)]
+
+
+_chart_cache: dict = {}  # (code, tf) -> (timestamp, payload)
+CHART_CACHE_SEC = 30
+
+
+@app.route("/api/chart2/<code>")
+def api_chart2(code: str):
+    """전문 차트용 OHLCV + 지표 시계열. tf=1|5(분봉) / D|W|M(일|주|월봉)."""
+    if not state.configured:
+        return jsonify({"error": "설정이 필요합니다."}), 400
+    if not code.isalnum():
+        return jsonify({"error": "잘못된 종목코드입니다."}), 400
+    tf = request.args.get("tf", "D").upper()
+    if tf not in ("1", "5", "D", "W", "M"):
+        return jsonify({"error": "지원하지 않는 주기입니다."}), 400
+
+    import time as _time
+    cached = _chart_cache.get((code, tf))
+    if cached and _time.time() - cached[0] < CHART_CACHE_SEC:
+        return jsonify(cached[1])
+
+    p = load_rules()["params"]
+    try:
+        if tf in ("D", "W", "M"):
+            candles = state.client.get_ohlc_candles(code, tf)
+            times = [f"{c['date'][:4]}-{c['date'][4:6]}-{c['date'][6:8]}" for c in candles]
+        else:
+            minutes = state.client.get_minute_candles(code, max_rows=400)
+            candles = _aggregate_minutes(minutes, 5 if tf == "5" else 1)
+            # 차트 라이브러리는 epoch 초를 UTC 로 표시하므로 KST 시각을 그대로 보이게 9시간 보정
+            from calendar import timegm
+            times = []
+            for c in candles:
+                dt = datetime.strptime(c["date"] + c["time"], "%Y%m%d%H%M%S")
+                times.append(timegm(dt.timetuple()))
+    except KisApiError as e:
+        return jsonify({"error": str(e)}), 500
+    if not candles:
+        return jsonify({"error": "차트 데이터가 없습니다 (휴장일이거나 장 시작 전일 수 있음)."}), 500
+
+    closes = [float(c["close"]) for c in candles]
+    upper, middle, lower = bollinger_series(closes, p["boll_window"], p["boll_k"])
+    macd_line, signal_line, hist = macd_series(
+        closes, p["macd_short"], p["macd_long"], p["macd_signal"])
+    rsi_line = rsi_series(closes, p["rsi_period"])
+    rnd = lambda xs, d=1: [round(x, d) if x is not None else None for x in xs]
+    payload = {
+        "code": code, "tf": tf, "times": times,
+        "candles": [{"o": c["open"], "h": c["high"], "l": c["low"],
+                     "c": c["close"], "v": c["volume"]} for c in candles],
+        "boll_upper": rnd(upper, 0), "boll_middle": rnd(middle, 0), "boll_lower": rnd(lower, 0),
+        "macd": rnd(macd_line), "macd_signal": rnd(signal_line), "macd_hist": rnd(hist),
+        "rsi": rnd(rsi_line), "rsi_buy": p["rsi_buy"], "rsi_sell": p["rsi_sell"],
+    }
+    _chart_cache[(code, tf)] = (_time.time(), payload)
+    return jsonify(payload)
+
+
 @app.route("/api/chart/<code>")
 def api_chart(code: str):
     """차트용 시계열: 종가 + 볼린저 밴드 + MACD + RSI (최근 60일)."""

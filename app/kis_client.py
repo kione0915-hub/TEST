@@ -28,6 +28,11 @@ class KisApiError(RuntimeError):
 
 
 class KisClient:
+    # 유량 제한 상태는 클래스 전체가 공유한다.
+    # (설정 저장 등으로 클라이언트가 여러 개 생겨도 합산 호출 속도가 한도를 넘지 않도록)
+    _throttle_lock = threading.Lock()
+    _last_call = 0.0
+
     def __init__(self, settings: Settings):
         self.s = settings
         self._token: str | None = None
@@ -35,16 +40,14 @@ class KisClient:
         self._session = requests.Session()
         # 호출 유량 제한: 모의투자는 초당 2건이라 여유 있게 0.6초 간격을 지킨다
         self._min_interval = 0.6 if settings.is_paper else 0.1
-        self._throttle_lock = threading.Lock()
-        self._last_call = 0.0
 
     def _throttle(self) -> None:
-        """API 호출 간 최소 간격을 보장한다 (여러 스레드에서 호출돼도 안전)."""
-        with self._throttle_lock:
-            wait = self._min_interval - (time.monotonic() - self._last_call)
+        """API 호출 간 최소 간격을 보장한다 (스레드/인스턴스가 여럿이어도 안전)."""
+        with KisClient._throttle_lock:
+            wait = self._min_interval - (time.monotonic() - KisClient._last_call)
             if wait > 0:
                 time.sleep(wait)
-            self._last_call = time.monotonic()
+            KisClient._last_call = time.monotonic()
 
     # ---------- 인증 ----------
 
@@ -220,6 +223,88 @@ class KisClient:
     def get_daily_closes(self, symbol: str) -> list[int]:
         """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 100개)."""
         return [c["close"] for c in self.get_daily_candles(symbol)]
+
+    def get_ohlc_candles(self, symbol: str, period: str = "D") -> list[dict]:
+        """일(D)/주(W)/월(M)봉 OHLCV 목록 (과거 -> 최신 순, 최대 100개).
+
+        [{date: 'YYYYMMDD', open, high, low, close, volume}]
+        """
+        days = {"D": 200, "W": 900, "M": 3700}.get(period, 200)
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            tr_id="FHKST03010100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": symbol,
+                "FID_INPUT_DATE_1": start,
+                "FID_INPUT_DATE_2": end,
+                "FID_PERIOD_DIV_CODE": period,
+                "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
+            },
+        )
+        candles = [
+            {
+                "date": row["stck_bsop_date"],
+                "open": int(row["stck_oprc"]),
+                "high": int(row["stck_hgpr"]),
+                "low": int(row["stck_lwpr"]),
+                "close": int(row["stck_clpr"]),
+                "volume": int(row.get("acml_vol") or 0),
+            }
+            for row in data["output2"] if row.get("stck_clpr")
+        ]
+        candles.reverse()
+        return candles
+
+    def get_minute_candles(self, symbol: str, max_rows: int = 400) -> list[dict]:
+        """당일 1분봉 목록 (과거 -> 최신 순).
+
+        API가 1회에 30건(최신부터)만 주므로 시각을 되짚어가며 여러 번 조회한다.
+        [{date, time: 'HHMMSS', open, high, low, close, volume}]
+        """
+        rows: dict[str, dict] = {}  # time -> candle (중복 제거)
+        hour = datetime.now().strftime("%H%M%S")
+        if hour > "153000":
+            hour = "153000"
+        for _ in range(max_rows // 30 + 2):
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                tr_id="FHKST03010200",
+                params={
+                    "FID_ETC_CLS_CODE": "",
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_HOUR_1": hour,
+                    "FID_PW_DATA_INCU_YN": "Y",
+                },
+            )
+            batch = data.get("output2", [])
+            new = 0
+            earliest = hour
+            for row in batch:
+                t = row.get("stck_cntg_hour")
+                if not t or not row.get("stck_prpr"):
+                    continue
+                if t not in rows:
+                    new += 1
+                rows[t] = {
+                    "date": row.get("stck_bsop_date", ""),
+                    "time": t,
+                    "open": int(row["stck_oprc"]),
+                    "high": int(row["stck_hgpr"]),
+                    "low": int(row["stck_lwpr"]),
+                    "close": int(row["stck_prpr"]),
+                    "volume": int(row.get("cntg_vol") or 0),
+                }
+                earliest = min(earliest, t)
+            if not batch or new == 0 or len(rows) >= max_rows or earliest <= "090000":
+                break
+            # 다음 조회는 지금까지 받은 것 중 가장 이른 시각의 1분 전부터
+            t = datetime.strptime(earliest, "%H%M%S") - timedelta(minutes=1)
+            hour = t.strftime("%H%M%S")
+        return [rows[t] for t in sorted(rows)]
 
     # ---------- 주문 ----------
 

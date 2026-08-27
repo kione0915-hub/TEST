@@ -72,10 +72,29 @@
     <h2 style="margin:0">📊 차트 <span class="muted" id="chart-title"></span></h2>
     <div class="row" id="chart-symbols"></div>
   </div>
-  <p class="muted" id="chart-hint">종목 버튼을 누르면 최근 60일 차트가 표시됩니다.</p>
-  <div style="position:relative; height:250px;"><canvas id="chart-price"></canvas></div>
-  <div style="position:relative; height:140px; margin-top:8px;"><canvas id="chart-macd"></canvas></div>
-  <div style="position:relative; height:120px; margin-top:8px;"><canvas id="chart-rsi"></canvas></div>
+  <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+    <div class="row" id="tf-buttons" style="gap:4px;">
+      <button class="btn-plain tf-btn" data-tf="1">1분</button>
+      <button class="btn-plain tf-btn" data-tf="5">5분</button>
+      <button class="btn-blue tf-btn" data-tf="D">일봉</button>
+      <button class="btn-plain tf-btn" data-tf="W">주봉</button>
+      <button class="btn-plain tf-btn" data-tf="M">월봉</button>
+    </div>
+    <div class="row" style="gap:4px;">
+      <button class="btn-plain" id="tool-hline" onclick="setTool('hline')">─ 수평선</button>
+      <button class="btn-plain" id="tool-trend" onclick="setTool('trend')">╱ 추세선</button>
+      <button class="btn-plain" onclick="clearDrawings()">지우기</button>
+    </div>
+  </div>
+  <p class="muted" id="chart-hint" style="margin:4px 0;">
+    마우스 휠 = 확대/축소, 드래그 = 이동. 수평선/추세선 버튼을 누른 뒤 차트를 클릭해 선을 긋습니다 (추세선은 두 번 클릭).
+  </p>
+  <div style="position:relative;">
+    <div id="chart-legend" class="muted" style="position:absolute; top:6px; left:8px; z-index:5; font-size:12.5px;"></div>
+    <div id="pro-main" style="height:340px;"></div>
+  </div>
+  <div id="pro-macd" style="height:120px; margin-top:4px;"></div>
+  <div id="pro-rsi" style="height:100px; margin-top:4px;"></div>
 </div>
 
 <div class="card">
@@ -83,7 +102,7 @@
   <div id="logs"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -235,76 +254,217 @@ async function saveRules() {
   }
 }
 
-// ---------- 차트 ----------
+// ---------- 전문 차트 (Lightweight Charts) ----------
 let currentChartCode = null;
-let charts = {};  // Chart.js 인스턴스
+let currentTf = "D";
+let lw = { main: null, macd: null, rsi: null };       // 차트 인스턴스
+let lwSeries = {};                                     // 시리즈 참조
+let drawTool = null;                                   // 'hline' | 'trend' | null
+let trendStart = null;                                 // 추세선 첫 클릭 지점
+let priceLines = [];                                   // 수평선 참조
+let trendSeries = [];                                  // 추세선 시리즈 참조
+let syncing = false;
 
-const INK = "#1c2333", MUTED = "#6b7280", GRID = "rgba(107,114,128,.12)";
-const baseOpts = {
-  responsive: true, maintainAspectRatio: false, animation: false,
-  interaction: { mode: "index", intersect: false },
-  plugins: {
-    legend: { labels: { color: MUTED, boxWidth: 14, font: { size: 11 } } },
-    tooltip: { mode: "index", intersect: false },
-  },
-  scales: {
-    x: { ticks: { color: MUTED, maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
-    y: { ticks: { color: MUTED, font: { size: 10 } }, grid: { color: GRID } },
-  },
+const UP = "#dc2626", DOWN = "#2563eb", MUTED = "#6b7280";
+const CHART_OPTS = {
+  autoSize: true,
+  layout: { background: { color: "transparent" }, textColor: MUTED, fontSize: 11 },
+  grid: { vertLines: { color: "rgba(107,114,128,.08)" },
+          horzLines: { color: "rgba(107,114,128,.08)" } },
+  crosshair: { mode: 0 },
+  timeScale: { borderColor: "rgba(107,114,128,.25)", timeVisible: true, secondsVisible: false },
+  rightPriceScale: { borderColor: "rgba(107,114,128,.25)" },
 };
 
-function makeChart(id, config) {
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart($(id).getContext("2d"), config);
+function destroyCharts() {
+  for (const k of ["main", "macd", "rsi"]) {
+    if (lw[k]) { lw[k].remove(); lw[k] = null; }
+  }
+  lwSeries = {}; priceLines = []; trendSeries = []; trendStart = null;
 }
 
-async function loadChart(code) {
-  if (typeof Chart === "undefined") {
+function syncPanes(from) {
+  from.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (syncing || !range) return;
+    syncing = true;
+    for (const k of ["main", "macd", "rsi"]) {
+      if (lw[k] && lw[k] !== from) lw[k].timeScale().setVisibleLogicalRange(range);
+    }
+    syncing = false;
+  });
+}
+
+function drawKey() { return `draw:${currentChartCode}:${currentTf}`; }
+
+function saveDrawings() {
+  try {
+    const h = priceLines.map(p => p.price);
+    const t = trendSeries.map(s => s._pts);
+    localStorage.setItem(drawKey(), JSON.stringify({h, t}));
+  } catch (e) {}
+}
+
+function addHLine(price) {
+  const line = lwSeries.candles.createPriceLine({
+    price, color: "#f59e0b", lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    axisLabelVisible: true, title: "",
+  });
+  priceLines.push({ line, price });
+}
+
+function addTrend(p1, p2) {
+  const pts = [p1, p2].sort((a, b) => (a.time > b.time ? 1 : -1));
+  const s = lw.main.addLineSeries({ color: "#f59e0b", lineWidth: 2,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  s.setData(pts.map(p => ({ time: p.time, value: p.value })));
+  s._pts = pts;
+  trendSeries.push(s);
+}
+
+function restoreDrawings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(drawKey()) || "{}");
+    (saved.h || []).forEach(addHLine);
+    (saved.t || []).forEach(pts => addTrend(pts[0], pts[1]));
+  } catch (e) {}
+}
+
+function clearDrawings() {
+  priceLines.forEach(p => lwSeries.candles.removePriceLine(p.line));
+  trendSeries.forEach(s => lw.main.removeSeries(s));
+  priceLines = []; trendSeries = []; trendStart = null;
+  saveDrawings();
+}
+
+function setTool(tool) {
+  drawTool = drawTool === tool ? null : tool;
+  trendStart = null;
+  $("tool-hline").className = drawTool === "hline" ? "btn-blue" : "btn-plain";
+  $("tool-trend").className = drawTool === "trend" ? "btn-blue" : "btn-plain";
+}
+
+function lineData(times, values) {
+  const out = [];
+  for (let i = 0; i < times.length; i++)
+    if (values[i] !== null && values[i] !== undefined)
+      out.push({ time: times[i], value: values[i] });
+  return out;
+}
+
+async function loadChart(code, tf) {
+  if (typeof LightweightCharts === "undefined") {
     $("chart-hint").textContent = "차트 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.";
     return;
   }
   currentChartCode = code;
+  if (tf) currentTf = tf;
   document.querySelectorAll(".chart-btn").forEach(b => {
     b.className = b.dataset.code === code ? "btn-blue chart-btn" : "btn-plain chart-btn";
   });
-  $("chart-hint").textContent = "불러오는 중...";
-  const r = await fetch("/api/chart/" + code);
+  document.querySelectorAll(".tf-btn").forEach(b => {
+    b.className = b.dataset.tf === currentTf ? "btn-blue tf-btn" : "btn-plain tf-btn";
+  });
+  $("chart-hint").textContent = currentTf === "5" || currentTf === "1"
+    ? "분봉을 불러오는 중... (여러 번 조회해야 해서 몇 초 걸립니다)" : "불러오는 중...";
+  const r = await fetch(`/api/chart2/${code}?tf=${currentTf}`);
   const d = await r.json();
   if (d.error) { $("chart-hint").textContent = "차트 조회 실패: " + d.error; return; }
-  $("chart-hint").textContent = "";
-  $("chart-title").textContent = `— ${code} 최근 ${d.labels.length}일`;
+  $("chart-hint").textContent = "마우스 휠 = 확대/축소, 드래그 = 이동. 선 긋기: 수평선/추세선 버튼 클릭 후 차트 클릭.";
+  const tfLabel = {1: "1분봉", 5: "5분봉", D: "일봉", W: "주봉", M: "월봉"}[currentTf];
+  $("chart-title").textContent = `— ${code} ${tfLabel} (${d.candles.length}개)`;
 
-  makeChart("chart-price", { type: "line", data: { labels: d.labels, datasets: [
-    { label: "종가", data: d.closes, borderColor: INK, borderWidth: 2,
-      pointRadius: 0, tension: 0.15 },
-    { label: "볼린저 상단", data: d.boll_upper, borderColor: "#9ca3af", borderWidth: 1,
-      pointRadius: 0, fill: 3, backgroundColor: "rgba(156,163,175,.10)" },
-    { label: "볼린저 중심", data: d.boll_middle, borderColor: "#9ca3af", borderWidth: 1,
-      borderDash: [4, 4], pointRadius: 0 },
-    { label: "볼린저 하단", data: d.boll_lower, borderColor: "#9ca3af", borderWidth: 1,
-      pointRadius: 0 },
-  ]}, options: baseOpts });
+  destroyCharts();
+  lw.main = LightweightCharts.createChart($("pro-main"), CHART_OPTS);
+  lw.macd = LightweightCharts.createChart($("pro-macd"), CHART_OPTS);
+  lw.rsi  = LightweightCharts.createChart($("pro-rsi"), CHART_OPTS);
 
-  makeChart("chart-macd", { type: "bar", data: { labels: d.labels, datasets: [
-    { type: "line", label: "MACD", data: d.macd, borderColor: "#2563eb",
-      borderWidth: 2, pointRadius: 0, tension: 0.15 },
-    { type: "line", label: "시그널", data: d.macd_signal, borderColor: "#f59e0b",
-      borderWidth: 2, pointRadius: 0, tension: 0.15 },
-    { label: "히스토그램", data: d.macd_hist,
-      backgroundColor: d.macd_hist.map(v => (v ?? 0) >= 0 ? "rgba(220,38,38,.55)" : "rgba(37,99,235,.45)") },
-  ]}, options: baseOpts });
+  // 캔들 + 거래량 + 볼린저
+  lwSeries.candles = lw.main.addCandlestickSeries({
+    upColor: UP, downColor: DOWN, borderVisible: false,
+    wickUpColor: UP, wickDownColor: DOWN,
+  });
+  lwSeries.candles.setData(d.times.map((t, i) => ({
+    time: t, open: d.candles[i].o, high: d.candles[i].h,
+    low: d.candles[i].l, close: d.candles[i].c,
+  })));
+  lwSeries.volume = lw.main.addHistogramSeries({
+    priceScaleId: "vol", priceFormat: { type: "volume" },
+    color: "rgba(107,114,128,.35)",
+  });
+  lw.main.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  lwSeries.volume.setData(d.times.map((t, i) => ({ time: t, value: d.candles[i].v })));
+  for (const [key, color, dash] of [["boll_upper", "#9ca3af", false],
+                                    ["boll_middle", "#9ca3af", true],
+                                    ["boll_lower", "#9ca3af", false]]) {
+    const s = lw.main.addLineSeries({ color, lineWidth: 1,
+      lineStyle: dash ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    s.setData(lineData(d.times, d[key]));
+  }
 
-  const guide = v => d.labels.map(() => v);
-  makeChart("chart-rsi", { type: "line", data: { labels: d.labels, datasets: [
-    { label: "RSI", data: d.rsi, borderColor: "#7c3aed", borderWidth: 2,
-      pointRadius: 0, tension: 0.15 },
-    { label: `과매수 ${d.rsi_sell}`, data: guide(d.rsi_sell), borderColor: "#9ca3af",
-      borderWidth: 1, borderDash: [4, 4], pointRadius: 0 },
-    { label: `과매도 ${d.rsi_buy}`, data: guide(d.rsi_buy), borderColor: "#9ca3af",
-      borderWidth: 1, borderDash: [4, 4], pointRadius: 0 },
-  ]}, options: { ...baseOpts, scales: { ...baseOpts.scales,
-      y: { ...baseOpts.scales.y, min: 0, max: 100 } } } });
+  // MACD 패널
+  lwSeries.hist = lw.macd.addHistogramSeries({ priceFormat: { type: "price", precision: 1 } });
+  lwSeries.hist.setData(lineData(d.times, d.macd_hist).map(p => ({
+    ...p, color: p.value >= 0 ? "rgba(220,38,38,.5)" : "rgba(37,99,235,.45)" })));
+  const macdL = lw.macd.addLineSeries({ color: "#2563eb", lineWidth: 2,
+    priceLineVisible: false, lastValueVisible: false });
+  macdL.setData(lineData(d.times, d.macd));
+  const sigL = lw.macd.addLineSeries({ color: "#f59e0b", lineWidth: 2,
+    priceLineVisible: false, lastValueVisible: false });
+  sigL.setData(lineData(d.times, d.macd_signal));
+
+  // RSI 패널
+  const rsiL = lw.rsi.addLineSeries({ color: "#7c3aed", lineWidth: 2,
+    priceLineVisible: false, lastValueVisible: false });
+  rsiL.setData(lineData(d.times, d.rsi));
+  rsiL.createPriceLine({ price: d.rsi_sell, color: "#9ca3af", lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed, title: "과매수" });
+  rsiL.createPriceLine({ price: d.rsi_buy, color: "#9ca3af", lineWidth: 1,
+    lineStyle: LightweightCharts.LineStyle.Dashed, title: "과매도" });
+
+  // 패널 간 시간축 동기화
+  syncPanes(lw.main); syncPanes(lw.macd); syncPanes(lw.rsi);
+
+  // OHLC 범례 (십자선 따라 갱신)
+  lw.main.subscribeCrosshairMove(param => {
+    const c = param.seriesData && param.seriesData.get(lwSeries.candles);
+    if (!c) { $("chart-legend").textContent = ""; return; }
+    const chg = ((c.close - c.open) / c.open * 100).toFixed(2);
+    $("chart-legend").innerHTML =
+      `시 ${c.open.toLocaleString()} 고 ${c.high.toLocaleString()} ` +
+      `저 ${c.low.toLocaleString()} 종 <b>${c.close.toLocaleString()}</b> ` +
+      `<span class="${c.close >= c.open ? 'sig-buy' : 'sig-sell'}">${chg}%</span>`;
+  });
+
+  // 선 긋기 (클릭)
+  lw.main.subscribeClick(param => {
+    if (!drawTool || !param.point || param.time === undefined) return;
+    const price = lwSeries.candles.coordinateToPrice(param.point.y);
+    if (price === null) return;
+    if (drawTool === "hline") {
+      addHLine(Math.round(price));
+      saveDrawings();
+    } else if (drawTool === "trend") {
+      if (!trendStart) {
+        trendStart = { time: param.time, value: price };
+      } else {
+        if (trendStart.time !== param.time) {
+          addTrend(trendStart, { time: param.time, value: price });
+          saveDrawings();
+        }
+        trendStart = null;
+      }
+    }
+  });
+
+  restoreDrawings();
+  lw.main.timeScale().fitContent();
 }
+
+document.querySelectorAll(".tf-btn").forEach(b => {
+  b.onclick = () => { if (currentChartCode) loadChart(currentChartCode, b.dataset.tf); };
+});
 
 poll();
 loadRules().then(() => {
