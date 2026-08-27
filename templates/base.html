@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>자동매매 대시보드</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1c2333; --sub: #6b7280;
+    --line: #e5e7eb; --blue: #2563eb; --red: #dc2626; --green: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  header { background: #111827; color: #fff; padding: 14px 20px;
+           display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 17px; margin: 0; }
+  header a { color: #cbd5e1; text-decoration: none; font-size: 14px; }
+  header a:hover { color: #fff; }
+  main { max-width: 960px; margin: 20px auto; padding: 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--sub); }
+  button { border: 0; border-radius: 8px; padding: 10px 18px; font-size: 14px;
+           cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-start { background: var(--green); color: #fff; }
+  .btn-stop  { background: var(--red); color: #fff; }
+  .btn-plain { background: #e5e7eb; color: var(--text); }
+  .btn-blue  { background: var(--blue); color: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 13px; }
+  .sig-buy  { color: var(--red);  font-weight: 700; }
+  .sig-sell { color: var(--blue); font-weight: 700; }
+  .sig-hold { color: var(--sub); }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px;
+           font-size: 12.5px; font-weight: 600; }
+  .badge-on  { background: #dcfce7; color: #15803d; }
+  .badge-off { background: #f3f4f6; color: #6b7280; }
+  #logs { background: #0f172a; color: #cbd5e1; border-radius: 8px; padding: 12px;
+          font-family: Consolas, monospace; font-size: 12.5px; height: 220px;
+          overflow-y: auto; white-space: pre-wrap; }
+  label { display: block; font-size: 13.5px; font-weight: 600; margin: 14px 0 4px; }
+  label .hint { font-weight: 400; color: var(--sub); }
+  input[type=text], input[type=password], input[type=number] {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 8px; font-size: 14px; }
+  .muted { color: var(--sub); font-size: 13px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 KIS 자동매매</h1>
+  <a href="/">대시보드</a>
+  <a href="/settings">⚙️ 설정</a>
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

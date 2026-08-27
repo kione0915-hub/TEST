@@ -81,7 +81,8 @@ class Trader:
                 logger.error("[%s] 처리 실패: %s", symbol, e)
             time.sleep(0.5)  # API 호출 유량 제한 보호
 
-    def run_forever(self) -> None:
+    def run_forever(self, stop_event=None) -> None:
+        """매매 루프. stop_event(threading.Event)가 설정되면 종료한다."""
         mode_label = "모의투자" if self.s.is_paper else "실전투자"
         order_label = "자동주문 ON" if self.s.auto_order else "알림만 (자동주문 OFF)"
         alert_label = "텔레그램" if self.notifier.telegram_enabled else "화면 로그"
@@ -93,7 +94,7 @@ class Trader:
                 f"🚀 자동매매 시작 ({mode_label} / {order_label})\n"
                 f"종목: {', '.join(self.s.symbols)}"
             )
-        while True:
+        while not (stop_event and stop_event.is_set()):
             if is_market_open():
                 try:
                     self.run_once()
@@ -101,4 +102,9 @@ class Trader:
                     logger.error("매매 루프 오류: %s", e)
             else:
                 logger.info("장 운영시간(평일 09:00~15:30 KST)이 아닙니다. 대기 중...")
-            time.sleep(self.s.interval_sec)
+            # 1초 단위로 쪼개 자면서 정지 요청에 빠르게 반응한다
+            for _ in range(self.s.interval_sec):
+                if stop_event and stop_event.is_set():
+                    break
+                time.sleep(1)
+        logger.info("=== 자동매매 정지 ===")

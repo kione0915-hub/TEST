@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>⚙️ 설정 {% if not configured %} — 처음이시군요! 아래 항목을 채우고 저장하세요{% endif %}</h2>
+  <p class="muted">입력한 값은 <b>내 컴퓨터의 .env 파일에만</b> 저장되며 인터넷/GitHub에 올라가지 않습니다.</p>
+
+  <form method="post">
+    <h2 style="margin-top:20px">한국투자증권 API (모의투자)</h2>
+
+    <label>APP KEY
+      {% if env.get('KIS_PAPER_APP_KEY') %}<span class="hint">— 저장되어 있음. 바꿀 때만 입력</span>{% endif %}
+    </label>
+    <input type="password" name="app_key" placeholder="{% if env.get('KIS_PAPER_APP_KEY') %}(기존 값 유지){% else %}KIS Developers 에서 발급받은 APP KEY{% endif %}">
+
+    <label>APP SECRET
+      {% if env.get('KIS_PAPER_APP_SECRET') %}<span class="hint">— 저장되어 있음. 바꿀 때만 입력</span>{% endif %}
+    </label>
+    <input type="password" name="app_secret" placeholder="{% if env.get('KIS_PAPER_APP_SECRET') %}(기존 값 유지){% else %}APP SECRET{% endif %}">
+
+    <label>계좌번호 앞 8자리 <span class="hint">예: 50123456</span></label>
+    <input type="text" name="account" required value="{{ env.get('KIS_PAPER_ACCOUNT_NO', '') }}">
+
+    <label>계좌번호 뒤 2자리 <span class="hint">보통 01</span></label>
+    <input type="text" name="product_cd" value="{{ env.get('KIS_PAPER_ACCOUNT_PRODUCT_CD', '01') }}">
+
+    <h2 style="margin-top:26px">매매 설정</h2>
+
+    <label>종목코드 <span class="hint">쉼표로 구분 (005930=삼성전자, 000660=SK하이닉스)</span></label>
+    <input type="text" name="symbols" value="{{ env.get('TRADE_SYMBOLS', '005930,000660') }}">
+
+    <label>1회 주문 수량 (주)</label>
+    <input type="number" name="order_qty" min="1" value="{{ env.get('TRADE_ORDER_QTY', '1') }}">
+
+    <label>확인 주기 (초)</label>
+    <input type="number" name="interval" min="10" value="{{ env.get('TRADE_INTERVAL_SEC', '60') }}">
+
+    <label style="display:flex; align-items:center; gap:8px; margin-top:16px;">
+      <input type="checkbox" name="auto_order" {% if env.get('AUTO_ORDER', 'true') == 'true' %}checked{% endif %}>
+      신호가 나오면 자동으로 주문까지 실행 (끄면 알림만 받습니다)
+    </label>
+
+    <h2 style="margin-top:26px">텔레그램 알림 (선택)</h2>
+    <p class="muted">만드는 방법: 텔레그램에서 @BotFather 검색 → /newbot → 토큰 받기 →
+       내 봇에게 아무 메시지 보내기 → @userinfobot 에서 내 숫자 ID 확인</p>
+
+    <label>봇 토큰
+      {% if env.get('TELEGRAM_BOT_TOKEN') %}<span class="hint">— 저장되어 있음. 바꿀 때만 입력</span>{% endif %}
+    </label>
+    <input type="password" name="tg_token" placeholder="{% if env.get('TELEGRAM_BOT_TOKEN') %}(기존 값 유지){% else %}1234567890:AAH... 형태{% endif %}">
+
+    <label>채팅 ID <span class="hint">@userinfobot 이 알려준 숫자</span></label>
+    <input type="text" name="tg_chat" value="{{ env.get('TELEGRAM_CHAT_ID', '') }}">
+
+    <div style="margin-top:24px">
+      <button type="submit" class="btn-blue" style="padding:12px 28px">💾 저장하고 대시보드로</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

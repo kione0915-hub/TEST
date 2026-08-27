@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <div class="row" style="justify-content: space-between;">
+    <div class="row">
+      <span id="run-badge" class="badge badge-off">정지됨</span>
+      <span id="market-badge" class="badge badge-off">장 마감</span>
+      <span class="badge badge-on">모의투자</span>
+      <span id="order-badge" class="badge badge-off"></span>
+      <span id="tg-badge" class="badge badge-off"></span>
+    </div>
+    <div class="row">
+      <button id="btn-start" class="btn-start" onclick="startTrading()">▶ 자동매매 시작</button>
+      <button id="btn-stop" class="btn-stop" onclick="stopTrading()" disabled>■ 정지</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+    <h2 style="margin:0">계좌 &amp; 종목 신호 <span class="muted" id="updated-at"></span></h2>
+    <div class="row">
+      <button class="btn-plain" onclick="testAlert()">🔔 알림 테스트</button>
+      <button class="btn-blue" id="btn-refresh" onclick="refresh()">지표 새로고침</button>
+    </div>
+  </div>
+  <p class="muted">예수금: <b id="cash">-</b>원 &nbsp;|&nbsp; 총평가금액: <b id="total">-</b>원</p>
+  <table>
+    <thead><tr><th>종목코드</th><th>현재가</th><th>신호</th><th>근거 / 지표</th><th>보유</th></tr></thead>
+    <tbody id="symbol-rows"><tr><td colspan="5" class="muted">[지표 새로고침] 버튼을 눌러 주세요.</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>실행 로그</h2>
+  <div id="logs"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function setBadge(el, on, onText, offText) {
+  el.className = "badge " + (on ? "badge-on" : "badge-off");
+  el.textContent = on ? onText : offText;
+}
+
+function renderSnapshot(snap) {
+  if (!snap || !snap.symbols) return;
+  $("updated-at").textContent = "(업데이트 " + snap.updated_at + ")";
+  $("cash").textContent = snap.cash;
+  $("total").textContent = snap.total_value;
+  const rows = snap.symbols.map(s => {
+    if (s.error) return `<tr><td>${s.code}</td><td colspan="4" class="muted">오류: ${s.error}</td></tr>`;
+    const cls = s.signal === "매수" ? "sig-buy" : s.signal === "매도" ? "sig-sell" : "sig-hold";
+    const reasons = (s.reasons || []).map(r => "• " + r).join("<br>");
+    const detail = reasons ? reasons + "<br><span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>"
+                           : "<span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>";
+    return `<tr><td><b>${s.code}</b></td><td>${s.price}원</td>
+            <td class="${cls}">${s.signal}</td><td>${detail}</td><td>${s.held}주</td></tr>`;
+  });
+  $("symbol-rows").innerHTML = rows.join("");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/status");
+    const d = await r.json();
+    setBadge($("run-badge"), d.running, "실행 중", "정지됨");
+    setBadge($("market-badge"), d.market_open, "장 운영 중", "장 마감");
+    setBadge($("order-badge"), d.auto_order, "자동주문 ON", "알림만 (주문 OFF)");
+    setBadge($("tg-badge"), d.telegram, "텔레그램 연결됨", "텔레그램 미설정");
+    $("btn-start").disabled = d.running;
+    $("btn-stop").disabled = !d.running;
+    renderSnapshot(d.snapshot);
+    const logs = $("logs");
+    const atBottom = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 30;
+    logs.textContent = (d.logs || []).join("\n");
+    if (atBottom) logs.scrollTop = logs.scrollHeight;
+  } catch (e) { /* 서버 재시작 중 등 - 다음 폴링에서 복구 */ }
+}
+
+async function startTrading() { await fetch("/api/start", {method: "POST"}); poll(); }
+async function stopTrading()  { await fetch("/api/stop",  {method: "POST"}); poll(); }
+
+async function refresh() {
+  const btn = $("btn-refresh");
+  btn.disabled = true; btn.textContent = "조회 중...";
+  try {
+    const r = await fetch("/api/refresh", {method: "POST"});
+    const d = await r.json();
+    if (d.error) alert("조회 실패: " + d.error); else renderSnapshot(d);
+  } finally { btn.disabled = false; btn.textContent = "지표 새로고침"; }
+}
+
+async function testAlert() {
+  const r = await fetch("/api/test-alert", {method: "POST"});
+  const d = await r.json();
+  alert(d.ok ? "테스트 알림을 보냈습니다. 휴대폰 텔레그램을 확인하세요!" : d.error);
+}
+
+poll();
+setInterval(poll, 3000);
+</script>
+{% endblock %}
