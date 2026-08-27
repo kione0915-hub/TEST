@@ -27,6 +27,11 @@ class Settings:
     order_qty: int = 1
     interval_sec: int = 60
     auto_order: bool = True  # False 면 주문 없이 알림만 보낸다
+    # 매수 수량 결정 방식: qty(고정 수량) / amount(고정 금액) / percent(예수금 비율)
+    order_sizing: str = "qty"
+    order_amount: int = 100000   # amount 방식: 1회 매수 금액 (원)
+    order_percent: float = 10.0  # percent 방식: 예수금의 몇 %
+    sell_percent: float = 100.0  # 매도 신호 시 보유 수량의 몇 % 매도 (100=전량)
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
@@ -64,6 +69,11 @@ def load_settings() -> Settings:
         symbols=[s.strip() for s in os.getenv("TRADE_SYMBOLS", "005930").split(",") if s.strip()],
         order_qty=int(os.getenv("TRADE_ORDER_QTY", "1")),
         interval_sec=int(os.getenv("TRADE_INTERVAL_SEC", "60")),
+        order_sizing=(lambda v: v if v in ("qty", "amount", "percent") else "qty")(
+            os.getenv("ORDER_SIZING", "qty").strip().lower()),
+        order_amount=int(os.getenv("ORDER_AMOUNT", "100000")),
+        order_percent=float(os.getenv("ORDER_PERCENT", "10")),
+        sell_percent=float(os.getenv("SELL_PERCENT", "100")),
         auto_order=os.getenv("AUTO_ORDER", "true").strip().lower() in ("true", "1", "y", "yes"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),

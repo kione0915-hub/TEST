@@ -53,7 +53,28 @@ class Trader:
         self.on_cycle = None  # 대시보드 실시간 갱신용 콜백 (snapshot dict 를 받음)
         self._active: dict[str, set[str]] = {}  # 종목별 현재 활성 조건 (재알림 방지)
 
-    def check_symbol(self, symbol: str, holdings: dict[str, int], rules: dict) -> dict:
+    def buy_qty(self, price: int, cash: int) -> int:
+        """매수 수량 결정. 설정 방식(고정 수량/고정 금액/예수금 비율)에 따라 계산하고
+        예수금으로 살 수 있는 최대 수량을 넘지 않는다."""
+        if price <= 0:
+            return 0
+        if self.s.order_sizing == "amount":
+            qty = self.s.order_amount // price
+        elif self.s.order_sizing == "percent":
+            qty = int(cash * self.s.order_percent / 100) // price
+        else:
+            qty = self.s.order_qty
+        affordable = cash // price
+        return max(0, min(qty, affordable))
+
+    def sell_qty(self, held: int) -> int:
+        """매도 수량 결정. 보유 수량의 설정 비율(기본 100% = 전량)."""
+        if held <= 0 or self.s.sell_percent <= 0:
+            return 0
+        return min(held, max(1, int(held * self.s.sell_percent / 100)))
+
+    def check_symbol(self, symbol: str, holdings: dict[str, int], rules: dict,
+                     cash: int = 0) -> dict:
         closes = [float(c) for c in self.client.get_daily_closes(symbol)]
         price = self.client.get_current_price(symbol)
         closes.append(float(price))
@@ -74,11 +95,24 @@ class Trader:
 
         if self.s.auto_order:
             if signal is Signal.BUY and held == 0:
-                self.client.buy(symbol, self.s.order_qty)  # 시장가 매수
-                self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매수 {self.s.order_qty}주")
+                qty = self.buy_qty(price, cash)
+                if qty > 0:
+                    self.client.buy(symbol, qty)  # 시장가 매수
+                    self.notifier.send(
+                        f"✅ [주문 완료] {symbol} 시장가 매수 {qty}주 "
+                        f"(약 {qty * price:,}원)")
+                else:
+                    logger.warning("[%s] 매수 신호지만 예수금 부족으로 보류 (예수금 %s원)",
+                                   symbol, f"{cash:,}")
+                    self.notifier.send(
+                        f"❗ {symbol} 매수 신호가 떴지만 예수금({cash:,}원)이 부족해 "
+                        f"주문하지 않았습니다.")
             elif signal is Signal.SELL and held > 0:
-                self.client.sell(symbol, held)  # 보유 전량 시장가 매도
-                self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매도 {held}주 (전량)")
+                qty = self.sell_qty(held)
+                if qty > 0:
+                    self.client.sell(symbol, qty)  # 시장가 매도
+                    label = "전량" if qty == held else f"보유 {held}주 중"
+                    self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매도 {qty}주 ({label})")
 
         return {
             "code": symbol,
@@ -107,10 +141,11 @@ class Trader:
         rules = load_rules()  # 대시보드에서 바꾼 조건을 매 주기 반영
         balance = self.client.get_balance()
         summary = balance["summary"]
+        cash = int(summary.get("dnca_tot_amt", 0))
         rows = []
         for symbol in self.s.symbols:
             try:
-                rows.append(self.check_symbol(symbol, balance["holdings"], rules))
+                rows.append(self.check_symbol(symbol, balance["holdings"], rules, cash))
             except KisApiError as e:
                 logger.error("[%s] 처리 실패: %s", symbol, e)
                 rows.append({"code": symbol, "error": str(e)})

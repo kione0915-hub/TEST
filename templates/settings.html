@@ -29,8 +29,25 @@
     <label>종목코드 <span class="hint">쉼표로 구분 (005930=삼성전자, 000660=SK하이닉스)</span></label>
     <input type="text" name="symbols" value="{{ env.get('TRADE_SYMBOLS', '005930,000660') }}">
 
-    <label>1회 주문 수량 (주)</label>
+    <label>매수 수량 결정 방식 <span class="hint">— 매수 신호가 떴을 때 얼마나 살지</span></label>
+    {% set sizing = env.get('ORDER_SIZING', 'qty') %}
+    <select name="order_sizing" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px;">
+      <option value="qty" {% if sizing == 'qty' %}selected{% endif %}>고정 수량 — 아래 "1회 주문 수량"만큼</option>
+      <option value="amount" {% if sizing == 'amount' %}selected{% endif %}>고정 금액 — 아래 "1회 매수 금액"어치</option>
+      <option value="percent" {% if sizing == 'percent' %}selected{% endif %}>예수금 비율 — 남은 예수금의 아래 % 만큼</option>
+    </select>
+
+    <label>1회 주문 수량 (주) <span class="hint">— "고정 수량" 방식일 때 사용</span></label>
     <input type="number" name="order_qty" min="1" value="{{ env.get('TRADE_ORDER_QTY', '1') }}">
+
+    <label>1회 매수 금액 (원) <span class="hint">— "고정 금액" 방식일 때 사용. 예: 500000 이면 50만원어치</span></label>
+    <input type="number" name="order_amount" min="1000" step="1000" value="{{ env.get('ORDER_AMOUNT', '100000') }}">
+
+    <label>예수금 비율 (%) <span class="hint">— "예수금 비율" 방식일 때 사용. 예: 30 이면 예수금의 30%어치</span></label>
+    <input type="number" name="order_percent" min="1" max="100" value="{{ env.get('ORDER_PERCENT', '10') }}">
+
+    <label>매도 비율 (%) <span class="hint">— 매도 신호 시 보유 수량의 몇 %를 팔지. 100 = 전량</span></label>
+    <input type="number" name="sell_percent" min="1" max="100" value="{{ env.get('SELL_PERCENT', '100') }}">
 
     <label>확인 주기 (초)</label>
     <input type="number" name="interval" min="10" value="{{ env.get('TRADE_INTERVAL_SEC', '60') }}">
