@@ -14,6 +14,7 @@ API 키는 내 컴퓨터의 .env 파일에만 저장된다.
 
 import logging
 import threading
+import time
 import webbrowser
 from collections import deque
 from datetime import datetime
@@ -25,6 +26,7 @@ from app.config import Settings, load_settings
 from app.kis_client import KisApiError, KisClient
 from app.notifier import Notifier
 from app.indicators import bollinger_series, macd_series, rsi_series
+from app.minute_store import MinuteStore
 from app.rules import CONDITIONS, DEFAULT_PARAMS, load_rules, save_rules
 from app.strategy import analyze, decide
 from app.trader import Trader, is_market_open, price_target_conditions
@@ -145,6 +147,26 @@ class AppState:
 
 state = AppState()
 app = Flask(__name__)
+minute_store = MinuteStore(Path(__file__).parent / "data")
+
+
+def _minute_recorder() -> None:
+    """장중에 3분마다 종목별 최신 분봉(30개)을 받아 로컬에 쌓는다.
+
+    모의투자 API는 최근 30개만 주므로, 이렇게 계속 모아야 긴 분봉 차트가 된다.
+    """
+    from app.trader import is_market_open
+    while True:
+        try:
+            if state.configured and is_market_open():
+                for code in state.settings.symbols:
+                    rows = state.client.get_minute_candles(code, max_rows=30)
+                    added = minute_store.merge(code, rows)
+                    if added:
+                        logger.debug("[분봉 수집] %s +%d개", code, added)
+        except Exception:
+            logger.exception("분봉 수집 오류 (계속 진행)")
+        time.sleep(180)
 
 
 @app.route("/")
@@ -309,17 +331,17 @@ def api_rules():
 
 
 def _aggregate_minutes(candles: list[dict], minutes: int) -> list[dict]:
-    """1분봉을 N분봉으로 합친다."""
+    """1분봉을 N분봉으로 합친다 (여러 날짜가 섞여 있어도 날짜별로 구분)."""
     if minutes <= 1:
         return candles
-    buckets: dict[str, dict] = {}
+    buckets: dict[tuple, dict] = {}
     for c in candles:
         t = c["time"]
         slot = int(t[2:4]) // minutes * minutes
-        key = f"{t[:2]}{slot:02d}00"
+        key = (c["date"], f"{t[:2]}{slot:02d}00")
         b = buckets.get(key)
         if b is None:
-            buckets[key] = {**c, "time": key}
+            buckets[key] = {**c, "time": key[1]}
         else:
             b["high"] = max(b["high"], c["high"])
             b["low"] = min(b["low"], c["low"])
@@ -343,9 +365,8 @@ def api_chart2(code: str):
     if tf not in ("1", "5", "D", "W", "M"):
         return jsonify({"error": "지원하지 않는 주기입니다."}), 400
 
-    import time as _time
     cached = _chart_cache.get((code, tf))
-    if cached and _time.time() - cached[0] < CHART_CACHE_SEC:
+    if cached and time.time() - cached[0] < CHART_CACHE_SEC:
         return jsonify(cached[1])
 
     p = load_rules()["params"]
@@ -354,7 +375,10 @@ def api_chart2(code: str):
             candles = state.client.get_ohlc_candles(code, tf)
             times = [f"{c['date'][:4]}-{c['date'][4:6]}-{c['date'][6:8]}" for c in candles]
         else:
-            minutes = state.client.get_minute_candles(code, max_rows=400)
+            # 최신 30개를 받아 저장소에 합친 뒤, 지금까지 쌓인 전체 분봉으로 차트를 그린다
+            fresh = state.client.get_minute_candles(code, max_rows=30)
+            minute_store.merge(code, fresh)
+            minutes = minute_store.get(code) or fresh
             candles = _aggregate_minutes(minutes, 5 if tf == "5" else 1)
             # 차트 라이브러리는 epoch 초를 UTC 로 표시하므로 KST 시각을 그대로 보이게 9시간 보정
             from calendar import timegm
@@ -381,7 +405,7 @@ def api_chart2(code: str):
         "macd": rnd(macd_line), "macd_signal": rnd(signal_line), "macd_hist": rnd(hist),
         "rsi": rnd(rsi_line), "rsi_buy": p["rsi_buy"], "rsi_sell": p["rsi_sell"],
     }
-    _chart_cache[(code, tf)] = (_time.time(), payload)
+    _chart_cache[(code, tf)] = (time.time(), payload)
     return jsonify(payload)
 
 
@@ -468,6 +492,7 @@ def main() -> None:
     print(" 종료하려면 이 창을 닫으세요.")
     print("=" * 50)
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    threading.Thread(target=_minute_recorder, daemon=True).start()  # 분봉 자동 수집
     app.run(host="127.0.0.1", port=PORT, debug=False)
 
 

@@ -194,69 +194,60 @@ class KisClient:
         )
         return int(data["output"]["stck_prpr"])
 
-    def get_daily_candles(self, symbol: str) -> list[dict]:
-        """최근 일봉 목록 [{date: 'YYYYMMDD', close: int}] (과거 -> 최신 순, 최대 100개).
-
-        MACD 계산에 40개 이상이 필요해 기간별 시세 API를 사용한다.
-        """
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
-        data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-            tr_id="FHKST03010100",
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": symbol,
-                "FID_INPUT_DATE_1": start,
-                "FID_INPUT_DATE_2": end,
-                "FID_PERIOD_DIV_CODE": "D",
-                "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
-            },
-        )
-        candles = [
-            {"date": row["stck_bsop_date"], "close": int(row["stck_clpr"])}
-            for row in data["output2"] if row.get("stck_clpr")
-        ]
-        candles.reverse()  # API는 최신순으로 주므로 과거순으로 뒤집는다
-        return candles
-
     def get_daily_closes(self, symbol: str) -> list[int]:
         """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 100개)."""
         return [c["close"] for c in self.get_daily_candles(symbol)]
 
-    def get_ohlc_candles(self, symbol: str, period: str = "D") -> list[dict]:
-        """일(D)/주(W)/월(M)봉 OHLCV 목록 (과거 -> 최신 순, 최대 100개).
+    def get_ohlc_candles(self, symbol: str, period: str = "D",
+                         count: int = 400) -> list[dict]:
+        """일(D)/주(W)/월(M)봉 OHLCV 목록 (과거 -> 최신 순, 최대 count 개).
 
+        API가 1회에 100개까지만 주므로 날짜를 거슬러가며 여러 번 조회한다.
         [{date: 'YYYYMMDD', open, high, low, close, volume}]
         """
-        days = {"D": 200, "W": 900, "M": 3700}.get(period, 200)
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-        data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-            tr_id="FHKST03010100",
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": symbol,
-                "FID_INPUT_DATE_1": start,
-                "FID_INPUT_DATE_2": end,
-                "FID_PERIOD_DIV_CODE": period,
-                "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
-            },
-        )
-        candles = [
-            {
-                "date": row["stck_bsop_date"],
-                "open": int(row["stck_oprc"]),
-                "high": int(row["stck_hgpr"]),
-                "low": int(row["stck_lwpr"]),
-                "close": int(row["stck_clpr"]),
-                "volume": int(row.get("acml_vol") or 0),
-            }
-            for row in data["output2"] if row.get("stck_clpr")
-        ]
-        candles.reverse()
-        return candles
+        # 100개(1회분)를 받기 위해 필요한 달력일수 (휴일 여유 포함)
+        window_days = {"D": 170, "W": 760, "M": 3200}.get(period, 170)
+        out: dict[str, dict] = {}
+        end_dt = datetime.now()
+        for _ in range(count // 100 + 2):
+            start_dt = end_dt - timedelta(days=window_days)
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                tr_id="FHKST03010100",
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_DATE_1": start_dt.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": end_dt.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE": period,
+                    "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
+                },
+            )
+            batch = [
+                {
+                    "date": row["stck_bsop_date"],
+                    "open": int(row["stck_oprc"]),
+                    "high": int(row["stck_hgpr"]),
+                    "low": int(row["stck_lwpr"]),
+                    "close": int(row["stck_clpr"]),
+                    "volume": int(row.get("acml_vol") or 0),
+                }
+                for row in data.get("output2", []) if row.get("stck_clpr")
+            ]
+            new = sum(1 for c in batch if c["date"] not in out)
+            for c in batch:
+                out[c["date"]] = c
+            if not batch or new == 0 or len(out) >= count:
+                break
+            earliest = min(out)
+            end_dt = datetime.strptime(earliest, "%Y%m%d") - timedelta(days=1)
+        candles = [out[d] for d in sorted(out)]
+        return candles[-count:]
+
+    def get_daily_candles(self, symbol: str) -> list[dict]:
+        """(하위 호환) 최근 일봉 [{date, close}] 목록 — 지표 계산용 100여 개."""
+        return [{"date": c["date"], "close": c["close"]}
+                for c in self.get_ohlc_candles(symbol, "D", count=100)]
 
     def get_minute_candles(self, symbol: str, max_rows: int = 400) -> list[dict]:
         """당일 1분봉 목록 (과거 -> 최신 순).
