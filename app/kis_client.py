@@ -9,6 +9,7 @@
 import json
 import logging
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -137,19 +138,26 @@ class KisClient:
         )
         return int(data["output"]["stck_prpr"])
 
-    def get_daily_closes(self, symbol: str, period: str = "D") -> list[int]:
-        """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 30개)."""
+    def get_daily_closes(self, symbol: str) -> list[int]:
+        """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 100개).
+
+        MACD(12/26/9) 계산에 40개 이상이 필요해 기간별 시세 API를 사용한다.
+        """
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
         data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
-            tr_id="FHKST01010400",
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            tr_id="FHKST03010100",
             params={
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_INPUT_ISCD": symbol,
-                "FID_PERIOD_DIV_CODE": period,
+                "FID_INPUT_DATE_1": start,
+                "FID_INPUT_DATE_2": end,
+                "FID_PERIOD_DIV_CODE": "D",
                 "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
             },
         )
-        closes = [int(row["stck_clpr"]) for row in data["output"] if row.get("stck_clpr")]
+        closes = [int(row["stck_clpr"]) for row in data["output2"] if row.get("stck_clpr")]
         closes.reverse()  # API는 최신순으로 주므로 과거순으로 뒤집는다
         return closes
 

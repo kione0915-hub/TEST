@@ -25,9 +25,10 @@ class Settings:
     account_product_cd: str  # 계좌상품코드 뒤 2자리 (ACNT_PRDT_CD)
     symbols: list[str] = field(default_factory=list)
     order_qty: int = 1
-    short_window: int = 5
-    long_window: int = 20
     interval_sec: int = 60
+    auto_order: bool = True  # False 면 주문 없이 알림만 보낸다
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     @property
     def is_paper(self) -> bool:
@@ -62,7 +63,8 @@ def load_settings() -> Settings:
         account_product_cd=os.getenv(f"{prefix}_ACCOUNT_PRODUCT_CD", "01").strip(),
         symbols=[s.strip() for s in os.getenv("TRADE_SYMBOLS", "005930").split(",") if s.strip()],
         order_qty=int(os.getenv("TRADE_ORDER_QTY", "1")),
-        short_window=int(os.getenv("STRATEGY_SHORT_WINDOW", "5")),
-        long_window=int(os.getenv("STRATEGY_LONG_WINDOW", "20")),
         interval_sec=int(os.getenv("TRADE_INTERVAL_SEC", "60")),
+        auto_order=os.getenv("AUTO_ORDER", "true").strip().lower() in ("true", "1", "y", "yes"),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
     )

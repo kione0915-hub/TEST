@@ -23,6 +23,10 @@ def ask(prompt: str, default: str = "") -> str:
         print("  -> 값을 입력해 주세요.")
 
 
+def ask_optional(prompt: str) -> str:
+    return input(f"{prompt} (없으면 엔터): ").strip()
+
+
 def main() -> None:
     print("=" * 60)
     print(" 한국투자증권 자동매매 앱 - API 키 설정 도우미")
@@ -43,6 +47,14 @@ def main() -> None:
     product_cd = ask("4) 계좌번호 뒤 2자리", default="01")
     symbols = ask("5) 매매할 종목코드 (쉼표 구분)", default="005930,000660")
 
+    print("\n--- 텔레그램 알림 (선택사항, README 의 안내대로 봇을 만든 경우) ---")
+    tg_token = ask_optional("6) 텔레그램 봇 토큰")
+    tg_chat = ask_optional("7) 텔레그램 채팅 ID") if tg_token else ""
+
+    print("\n--- 매매 방식 ---")
+    auto = ask("8) 신호가 나오면 자동으로 주문까지 할까요? (y=자동주문 / n=알림만)", default="y")
+    auto_order = "true" if auto.lower().startswith("y") else "false"
+
     ENV_FILE.write_text(
         "# setup_keys.py 로 자동 생성된 설정 파일입니다.\n"
         "# 이 파일은 .gitignore 에 등록되어 GitHub 에 올라가지 않습니다.\n"
@@ -53,9 +65,10 @@ def main() -> None:
         f"KIS_PAPER_ACCOUNT_PRODUCT_CD={product_cd}\n"
         f"TRADE_SYMBOLS={symbols}\n"
         "TRADE_ORDER_QTY=1\n"
-        "STRATEGY_SHORT_WINDOW=5\n"
-        "STRATEGY_LONG_WINDOW=20\n"
-        "TRADE_INTERVAL_SEC=60\n",
+        "TRADE_INTERVAL_SEC=60\n"
+        f"AUTO_ORDER={auto_order}\n"
+        f"TELEGRAM_BOT_TOKEN={tg_token}\n"
+        f"TELEGRAM_CHAT_ID={tg_chat}\n",
         encoding="utf-8",
     )
     print(f"\n✅ 설정 완료! ({ENV_FILE})")
