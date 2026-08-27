@@ -18,13 +18,36 @@ REPO_ZIP_URL = f"https://codeload.github.com/kione0915-hub/TEST/zip/refs/heads/{
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _github_token() -> str:
+    """.env 의 GITHUB_TOKEN (있으면). 비공개 저장소 업데이트용."""
+    env_path = os.path.join(APP_DIR, ".env")
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("GITHUB_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
 def main() -> None:
     print("[업데이트] 최신 버전 확인 중...")
+    headers = {"User-Agent": "kis-auto-trader-updater"}
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        req = urllib.request.Request(
-            REPO_ZIP_URL, headers={"User-Agent": "kis-auto-trader-updater"})
+        req = urllib.request.Request(REPO_ZIP_URL, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read()
+    except urllib.error.HTTPError as e:
+        print(f"[업데이트] 확인 실패(HTTP {e.code}) — 현재 버전으로 실행합니다.")
+        if e.code == 404 and not token:
+            print("  -> 저장소가 비공개(private)면 프로그램이 접근할 수 없습니다.")
+            print("     해결: GitHub 저장소를 Public 으로 바꾸거나,")
+            print("     .env 파일에 GITHUB_TOKEN=토큰값 한 줄을 추가하세요.")
+        return
     except Exception as e:
         print(f"[업데이트] 확인 실패({e.__class__.__name__}) — 현재 버전으로 실행합니다.")
         return
