@@ -332,6 +332,39 @@ def api_chart(code: str):
     })
 
 
+@app.route("/api/order", methods=["POST"])
+def api_order():
+    """대시보드에서 보내는 수동 시장가 주문."""
+    if not state.configured:
+        return jsonify({"error": "설정이 필요합니다."}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    code = str(data.get("code", "")).strip()
+    side = data.get("side")
+    try:
+        qty = int(data.get("qty", 0))
+    except (TypeError, ValueError):
+        qty = 0
+    if side not in ("buy", "sell") or not code.isalnum() or len(code) > 12:
+        return jsonify({"error": "잘못된 주문 요청입니다."}), 400
+    if not 1 <= qty <= 10000:
+        return jsonify({"error": "수량은 1~10,000주 사이여야 합니다."}), 400
+
+    try:
+        if side == "buy":
+            out = state.client.buy(code, qty)
+        else:
+            out = state.client.sell(code, qty)
+    except KisApiError as e:
+        logger.error("수동 주문 실패: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+    side_label = "매수" if side == "buy" else "매도"
+    mode_label = "모의" if state.settings.is_paper else "실전"
+    state.notifier.send(f"🛒 [수동 주문] {code} 시장가 {side_label} {qty}주 ({mode_label}, "
+                        f"주문번호 {out.get('ODNO', '?')})")
+    return jsonify({"ok": True, "order_no": out.get("ODNO")})
+
+
 @app.route("/api/test-alert", methods=["POST"])
 def api_test_alert():
     if not state.configured or not state.notifier.telegram_enabled:

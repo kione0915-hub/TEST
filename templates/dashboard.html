@@ -62,8 +62,8 @@
   </div>
   <p class="muted">예수금: <b id="cash">-</b>원 &nbsp;|&nbsp; 총평가금액: <b id="total">-</b>원</p>
   <table>
-    <thead><tr><th>종목코드</th><th>현재가</th><th>신호</th><th>근거 / 지표</th><th>보유</th></tr></thead>
-    <tbody id="symbol-rows"><tr><td colspan="5" class="muted">[지표 새로고침] 버튼을 눌러 주세요.</td></tr></tbody>
+    <thead><tr><th>종목코드</th><th>현재가</th><th>신호</th><th>근거 / 지표</th><th>보유</th><th>수동 주문</th></tr></thead>
+    <tbody id="symbol-rows"><tr><td colspan="6" class="muted">[지표 새로고침] 버튼을 눌러 주세요.</td></tr></tbody>
   </table>
 </div>
 
@@ -97,22 +97,53 @@ function renderSnapshot(snap) {
   $("updated-at").textContent = "(업데이트 " + snap.updated_at + ")";
   $("cash").textContent = snap.cash;
   $("total").textContent = snap.total_value;
+  // 3초마다 다시 그려도 입력 중인 수량이 지워지지 않도록 기존 값을 보존한다
+  const prevQty = {};
+  document.querySelectorAll(".qty-input").forEach(i => prevQty[i.dataset.code] = i.value);
   const rows = snap.symbols.map(s => {
-    if (s.error) return `<tr><td>${s.code}</td><td colspan="4" class="muted">오류: ${s.error}</td></tr>`;
+    if (s.error) return `<tr><td>${s.code}</td><td colspan="5" class="muted">오류: ${s.error}</td></tr>`;
     const cls = s.signal === "매수" ? "sig-buy" : s.signal === "매도" ? "sig-sell" : "sig-hold";
     const reasons = (s.reasons || []).map(r => "• " + r).join("<br>");
     const detail = reasons ? reasons + "<br><span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>"
                            : "<span class='muted'>" + s.summary.replaceAll("\n", "<br>") + "</span>";
+    const qty = prevQty[s.code] ?? 1;
     return `<tr><td><b>${s.code}</b></td><td>${s.price}원</td>
-            <td class="${cls}">${s.signal}</td><td>${detail}</td><td>${s.held}주</td></tr>`;
+            <td class="${cls}">${s.signal}</td><td>${detail}</td><td>${s.held}주</td>
+            <td style="white-space:nowrap;">
+              <input type="number" class="qty-input" data-code="${s.code}" min="1" max="10000"
+                     value="${qty}" style="width:58px; padding:6px;">
+              <button class="btn-start" style="padding:6px 12px;" onclick="placeOrder('${s.code}','buy')">매수</button>
+              <button class="btn-stop" style="padding:6px 12px;" onclick="placeOrder('${s.code}','sell')">매도</button>
+            </td></tr>`;
   });
   $("symbol-rows").innerHTML = rows.join("");
+}
+
+let isPaperMode = true;
+async function placeOrder(code, side) {
+  const inp = document.querySelector(`.qty-input[data-code="${code}"]`);
+  const qty = parseInt(inp?.value || "1", 10);
+  if (!qty || qty < 1) { alert("수량을 1 이상 입력하세요."); return; }
+  const sideLabel = side === "buy" ? "매수" : "매도";
+  const modeLabel = isPaperMode ? "모의투자" : "⚠️ 실전투자";
+  if (!confirm(`[${modeLabel}] ${code} ${qty}주를 시장가 ${sideLabel}합니다. 진행할까요?`)) return;
+  const r = await fetch("/api/order", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({code, side, qty})});
+  const d = await r.json();
+  if (d.ok) {
+    alert(`${sideLabel} 주문 완료! (주문번호 ${d.order_no})`);
+    refresh();  // 잔고/보유 수량 갱신
+  } else {
+    alert("주문 실패: " + d.error);
+  }
 }
 
 async function poll() {
   try {
     const r = await fetch("/api/status");
     const d = await r.json();
+    isPaperMode = d.mode !== "real";
     setBadge($("run-badge"), d.running, "실행 중", "정지됨");
     setBadge($("market-badge"), d.market_open, "장 운영 중", "장 마감");
     setBadge($("order-badge"), d.auto_order, "자동주문 ON", "알림만 (주문 OFF)");
