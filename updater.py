@@ -13,7 +13,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-BRANCH = "claude/auto-trading-app-dev-cliz9l"
+BRANCH = "main"
 REPO_ZIP_URL = f"https://codeload.github.com/kione0915-hub/TEST/zip/refs/heads/{BRANCH}"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
