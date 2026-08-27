@@ -24,8 +24,9 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 from app.config import Settings, load_settings
 from app.kis_client import KisApiError, KisClient
 from app.notifier import Notifier
-from app.strategy import analyze
-from app.trader import Trader, is_market_open
+from app.rules import CONDITIONS, load_rules, save_rules
+from app.strategy import analyze, decide
+from app.trader import Trader, is_market_open, price_target_conditions
 
 PORT = 8765
 ENV_FILE = Path(__file__).parent / ".env"
@@ -88,16 +89,22 @@ class AppState:
             return
         self.stop_event.clear()
         trader = Trader(self.settings, self.client, self.notifier)
+        trader.on_cycle = self._set_snapshot  # 매 주기 분석 결과를 대시보드에 반영
         self.trader_thread = threading.Thread(
             target=trader.run_forever, kwargs={"stop_event": self.stop_event}, daemon=True
         )
         self.trader_thread.start()
 
+    def _set_snapshot(self, snapshot: dict) -> None:
+        with self.lock:
+            self.snapshot = snapshot
+
     def stop_trading(self) -> None:
         self.stop_event.set()
 
     def refresh_snapshot(self) -> dict:
-        """잔고 + 종목별 지표를 1회 분석한다 (주문 없음)."""
+        """잔고 + 종목별 지표를 1회 분석한다 (주문/알림 없음)."""
+        rules = load_rules()
         balance = self.client.get_balance()
         holdings = balance["holdings"]
         summary = balance["summary"]
@@ -107,13 +114,16 @@ class AppState:
                 closes = [float(c) for c in self.client.get_daily_closes(code)]
                 price = self.client.get_current_price(code)
                 closes.append(float(price))
-                result = analyze(closes)
+                analysis = analyze(closes)
+                signal, enabled = decide(analysis, rules)
+                enabled = enabled + price_target_conditions(code, price, rules)
                 symbols.append({
                     "code": code,
                     "price": f"{price:,}",
-                    "signal": result.signal.value,
-                    "reasons": result.reasons,
-                    "summary": result.summary,
+                    "signal": signal.value,
+                    "reasons": [c.text for c in enabled],
+                    "summary": analysis.summary,
+                    "values": analysis.values,
                     "held": holdings.get(code, 0),
                 })
             except KisApiError as e:
@@ -124,8 +134,7 @@ class AppState:
             "total_value": f"{int(summary.get('tot_evlu_amt', 0)):,}",
             "symbols": symbols,
         }
-        with self.lock:
-            self.snapshot = snapshot
+        self._set_snapshot(snapshot)
         return snapshot
 
 
@@ -225,6 +234,36 @@ def api_start():
 def api_stop():
     state.stop_trading()
     return jsonify({"running": False})
+
+
+@app.route("/api/rules", methods=["GET", "POST"])
+def api_rules():
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        rules = load_rules()
+        for key in CONDITIONS:
+            if key in data:
+                rules[key] = bool(data[key])
+        if isinstance(data.get("price_targets"), dict):
+            targets = {}
+            for code, t in data["price_targets"].items():
+                clean = {}
+                for k in ("above", "below"):
+                    v = str(t.get(k, "")).replace(",", "").strip()
+                    if v.isdigit() and int(v) > 0:
+                        clean[k] = int(v)
+                if clean:
+                    targets[code.strip()] = clean
+            rules["price_targets"] = targets
+        save_rules(rules)
+        logger.info("알림 조건을 저장했습니다.")
+        return jsonify({"ok": True, "rules": rules})
+    return jsonify({
+        "rules": load_rules(),
+        "conditions": {k: {"label": label, "side": side}
+                       for k, (label, side) in CONDITIONS.items()},
+        "symbols": state.settings.symbols if state.configured else [],
+    })
 
 
 @app.route("/api/test-alert", methods=["POST"])

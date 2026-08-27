@@ -1,8 +1,9 @@
 """자동매매 실행 루프.
 
-MACD + 볼린저 밴드로 신호를 계산하고,
-신호가 발생하면 텔레그램 알림을 보낸다 (AUTO_ORDER=true 면 주문도 실행).
-같은 신호가 유지되는 동안 반복 알림은 보내지 않는다.
+매 주기마다 MACD/볼린저 조건과 목표가 도달을 검사해서
+- 사용자가 켜 둔 조건이 '새로 발생'한 순간에만 텔레그램 알림을 보내고
+- AUTO_ORDER=true 면 지표 신호에 따라 주문까지 실행한다.
+분석 결과는 on_cycle 콜백으로 발행되어 대시보드가 실시간 표시한다.
 """
 
 import logging
@@ -12,7 +13,8 @@ from datetime import datetime, time as dtime, timezone, timedelta
 from app.config import Settings
 from app.kis_client import KisApiError, KisClient
 from app.notifier import Notifier
-from app.strategy import Signal, analyze
+from app.rules import load_rules
+from app.strategy import Condition, Signal, analyze, decide
 
 logger = logging.getLogger(__name__)
 
@@ -28,58 +30,100 @@ def is_market_open(now: datetime | None = None) -> bool:
     return MARKET_OPEN <= now.time() <= MARKET_CLOSE
 
 
+def price_target_conditions(symbol: str, price: int, rules: dict) -> list[Condition]:
+    """사용자가 설정한 목표가 도달 조건 (알림 전용, 주문에는 영향 없음)."""
+    target = rules.get("price_targets", {}).get(symbol, {})
+    conditions = []
+    above = target.get("above")
+    below = target.get("below")
+    if above and price >= int(above):
+        conditions.append(Condition(
+            "price_above", "info", f"목표가 도달: 현재가 {price:,}원 ≥ {int(above):,}원"))
+    if below and price <= int(below):
+        conditions.append(Condition(
+            "price_below", "info", f"목표가 도달: 현재가 {price:,}원 ≤ {int(below):,}원"))
+    return conditions
+
+
 class Trader:
     def __init__(self, settings: Settings, client: KisClient, notifier: Notifier):
         self.s = settings
         self.client = client
         self.notifier = notifier
-        self._last_signal: dict[str, Signal] = {}  # 종목별 마지막 신호 (반복 알림 방지)
+        self.on_cycle = None  # 대시보드 실시간 갱신용 콜백 (snapshot dict 를 받음)
+        self._active: dict[str, set[str]] = {}  # 종목별 현재 활성 조건 (재알림 방지)
 
-    def check_symbol(self, symbol: str, holdings: dict[str, int]) -> None:
+    def check_symbol(self, symbol: str, holdings: dict[str, int], rules: dict) -> dict:
         closes = [float(c) for c in self.client.get_daily_closes(symbol)]
         price = self.client.get_current_price(symbol)
-        closes.append(float(price))  # 오늘 현재가를 최신 값으로 반영
-        result = analyze(closes)
+        closes.append(float(price))
+        analysis = analyze(closes)
+        signal, enabled = decide(analysis, rules)
+        enabled = enabled + price_target_conditions(symbol, price, rules)
         held = holdings.get(symbol, 0)
         logger.info("[%s] 현재가 %s원 / 신호: %s / 보유: %d주",
-                    symbol, f"{price:,}", result.signal.value, held)
+                    symbol, f"{price:,}", signal.value, held)
 
-        # 신호가 바뀌었을 때만 알림 (HOLD 로 돌아온 것은 알리지 않음)
-        if result.signal is not Signal.HOLD and self._last_signal.get(symbol) != result.signal:
-            self._notify_signal(symbol, price, result, held)
-        self._last_signal[symbol] = result.signal
+        # '새로 발생한' 조건만 알림 (조건이 유지되는 동안은 다시 알리지 않음)
+        active_keys = {c.key for c in enabled}
+        new_keys = active_keys - self._active.get(symbol, set())
+        if new_keys:
+            self._notify(symbol, price, held,
+                         [c for c in enabled if c.key in new_keys], analysis.summary)
+        self._active[symbol] = active_keys
 
-        if not self.s.auto_order:
-            return
-        if result.signal is Signal.BUY and held == 0:
-            self.client.buy(symbol, self.s.order_qty)  # 시장가 매수
-            self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매수 {self.s.order_qty}주")
-        elif result.signal is Signal.SELL and held > 0:
-            self.client.sell(symbol, held)  # 보유 전량 시장가 매도
-            self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매도 {held}주 (전량)")
+        if self.s.auto_order:
+            if signal is Signal.BUY and held == 0:
+                self.client.buy(symbol, self.s.order_qty)  # 시장가 매수
+                self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매수 {self.s.order_qty}주")
+            elif signal is Signal.SELL and held > 0:
+                self.client.sell(symbol, held)  # 보유 전량 시장가 매도
+                self.notifier.send(f"✅ [주문 완료] {symbol} 시장가 매도 {held}주 (전량)")
 
-    def _notify_signal(self, symbol: str, price: int, result, held: int) -> None:
-        emoji = "🔴" if result.signal is Signal.BUY else "🔵"
+        return {
+            "code": symbol,
+            "price": f"{price:,}",
+            "signal": signal.value,
+            "reasons": [c.text for c in enabled],
+            "summary": analysis.summary,
+            "values": analysis.values,
+            "held": held,
+        }
+
+    def _notify(self, symbol: str, price: int, held: int,
+                conditions: list[Condition], summary: str) -> None:
+        sides = {c.side for c in conditions}
+        emoji = "🔴" if sides == {"buy"} else "🔵" if sides == {"sell"} else "🔔"
         mode_label = "모의" if self.s.is_paper else "실전"
-        reasons = "\n".join(f"• {r}" for r in result.reasons)
+        lines = "\n".join(f"• {c.text}" for c in conditions)
         self.notifier.send(
-            f"{emoji} [{result.signal.value} 신호] {symbol} ({mode_label})\n"
+            f"{emoji} [알림] {symbol} ({mode_label})\n"
             f"현재가: {price:,}원 / 보유: {held}주\n"
-            f"{reasons}\n"
-            f"─ 지표 ─\n{result.summary}"
+            f"{lines}\n"
+            f"─ 지표 ─\n{summary}"
         )
 
-    def run_once(self) -> None:
+    def run_once(self) -> dict:
+        rules = load_rules()  # 대시보드에서 바꾼 조건을 매 주기 반영
         balance = self.client.get_balance()
         summary = balance["summary"]
-        logger.info("예수금: %s원 / 평가금액 합계: %s원",
-                    summary.get("dnca_tot_amt", "?"), summary.get("tot_evlu_amt", "?"))
+        rows = []
         for symbol in self.s.symbols:
             try:
-                self.check_symbol(symbol, balance["holdings"])
+                rows.append(self.check_symbol(symbol, balance["holdings"], rules))
             except KisApiError as e:
                 logger.error("[%s] 처리 실패: %s", symbol, e)
+                rows.append({"code": symbol, "error": str(e)})
             time.sleep(0.5)  # API 호출 유량 제한 보호
+        snapshot = {
+            "updated_at": datetime.now(KST).strftime("%H:%M:%S"),
+            "cash": f"{int(summary.get('dnca_tot_amt', 0)):,}",
+            "total_value": f"{int(summary.get('tot_evlu_amt', 0)):,}",
+            "symbols": rows,
+        }
+        if self.on_cycle:
+            self.on_cycle(snapshot)
+        return snapshot
 
     def run_forever(self, stop_event=None) -> None:
         """매매 루프. stop_event(threading.Event)가 설정되면 종료한다."""

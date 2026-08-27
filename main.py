@@ -14,7 +14,8 @@ import sys
 from app.config import load_settings
 from app.kis_client import KisClient
 from app.notifier import Notifier
-from app.strategy import analyze
+from app.rules import load_rules
+from app.strategy import analyze, decide
 from app.trader import Trader
 
 logging.basicConfig(
@@ -46,15 +47,17 @@ def main() -> None:
         return
 
     if args and args[0] == "check":
+        rules = load_rules()
         for symbol in settings.symbols:
             closes = [float(c) for c in client.get_daily_closes(symbol)]
             price = client.get_current_price(symbol)
             closes.append(float(price))
-            result = analyze(closes)
-            print(f"\n[{symbol}] 현재가 {price:,}원 -> 신호: {result.signal.value}")
-            for reason in result.reasons:
-                print(f"  • {reason}")
-            print(f"  {result.summary.replace(chr(10), chr(10) + '  ')}")
+            analysis = analyze(closes)
+            signal, enabled = decide(analysis, rules)
+            print(f"\n[{symbol}] 현재가 {price:,}원 -> 신호: {signal.value}")
+            for cond in enabled:
+                print(f"  • {cond.text}")
+            print(f"  {analysis.summary.replace(chr(10), chr(10) + '  ')}")
         return
 
     if args and args[0] == "test-alert":

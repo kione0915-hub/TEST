@@ -5,6 +5,7 @@
 *.key
 secrets/
 .token_cache.json
+alert_rules.json
 
 # Python
 __pycache__/
