@@ -62,15 +62,18 @@ class KisClient:
         return True
 
     def _issue_token(self) -> None:
-        resp = self._session.post(
-            f"{self.s.base_url}/oauth2/tokenP",
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self.s.app_key,
-                "appsecret": self.s.app_secret,
-            },
-            timeout=10,
-        )
+        try:
+            resp = self._session.post(
+                f"{self.s.base_url}/oauth2/tokenP",
+                json={
+                    "grant_type": "client_credentials",
+                    "appkey": self.s.app_key,
+                    "appsecret": self.s.app_secret,
+                },
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            raise KisApiError(f"토큰 발급 중 네트워크 오류: {e.__class__.__name__}") from e
         data = resp.json()
         if resp.status_code != 200 or "access_token" not in data:
             raise KisApiError(f"토큰 발급 실패: {data}")
@@ -105,16 +108,19 @@ class KisClient:
 
     def _hashkey(self, body: dict) -> str:
         self._throttle()
-        resp = self._session.post(
-            f"{self.s.base_url}/uapi/hashkey",
-            headers={
-                "content-type": "application/json; charset=utf-8",
-                "appkey": self.s.app_key,
-                "appsecret": self.s.app_secret,
-            },
-            json=body,
-            timeout=10,
-        )
+        try:
+            resp = self._session.post(
+                f"{self.s.base_url}/uapi/hashkey",
+                headers={
+                    "content-type": "application/json; charset=utf-8",
+                    "appkey": self.s.app_key,
+                    "appsecret": self.s.app_secret,
+                },
+                json=body,
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            raise KisApiError(f"hashkey 발급 중 네트워크 오류: {e.__class__.__name__}") from e
         data = resp.json()
         if "HASH" not in data:
             raise KisApiError(f"hashkey 발급 실패: {data}")
@@ -123,14 +129,38 @@ class KisClient:
     # ---------- 공통 요청 ----------
 
     def _request(self, method: str, path: str, headers: dict, **kwargs) -> dict:
-        """유량 제한을 지키며 요청하고, 한도 초과(EGW00201)면 자동 재시도한다."""
+        """유량 제한을 지키며 요청한다.
+
+        - 한도 초과(EGW00201)면 잠시 대기 후 자동 재시도
+        - 일시적 네트워크 오류(서버가 연결을 끊음 등)는 조회(GET)에 한해 자동 재시도.
+          주문(POST)은 이중 주문 위험이 있어 재시도하지 않고 오류로 알린다.
+        """
         data = {}
         for attempt in range(4):
             self._throttle()
-            resp = self._session.request(
-                method, f"{self.s.base_url}{path}", headers=headers, timeout=10, **kwargs
-            )
-            data = resp.json()
+            try:
+                resp = self._session.request(
+                    method, f"{self.s.base_url}{path}", headers=headers, timeout=10, **kwargs
+                )
+            except requests.RequestException as e:
+                if method == "GET" and attempt < 3:
+                    wait = 0.5 * (attempt + 1)
+                    logger.warning("일시적 네트워크 오류(%s), %.1f초 후 재시도... (%d/3)",
+                                   e.__class__.__name__, wait, attempt + 1)
+                    time.sleep(wait)
+                    continue
+                raise KisApiError(
+                    f"네트워크 오류 [{path}]: {e.__class__.__name__} — "
+                    "인터넷 연결을 확인하세요. 주문 요청이었다면 계좌에서 체결 여부를 확인하세요."
+                ) from e
+            try:
+                data = resp.json()
+            except ValueError:
+                if method == "GET" and attempt < 3:
+                    logger.warning("서버 응답 해석 실패, 재시도... (%d/3)", attempt + 1)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise KisApiError(f"서버 응답 해석 실패 [{path}] (HTTP {resp.status_code})")
             if resp.status_code == 200 and data.get("rt_cd") == "0":
                 return data
             if data.get("msg_cd") == RATE_LIMIT_CODE:

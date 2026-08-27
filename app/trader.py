@@ -143,6 +143,9 @@ class Trader:
                     self.run_once()
                 except KisApiError as e:
                     logger.error("매매 루프 오류: %s", e)
+                except Exception:
+                    # 예상 못한 오류로 매매 루프가 죽지 않도록 기록만 하고 계속 돈다
+                    logger.exception("매매 루프에서 예상치 못한 오류 발생 (계속 진행)")
             else:
                 logger.info("장 운영시간(평일 09:00~15:30 KST)이 아닙니다. 대기 중...")
             # 1초 단위로 쪼개 자면서 정지 요청에 빠르게 반응한다
