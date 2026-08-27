@@ -161,10 +161,10 @@ class KisClient:
         )
         return int(data["output"]["stck_prpr"])
 
-    def get_daily_closes(self, symbol: str) -> list[int]:
-        """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 100개).
+    def get_daily_candles(self, symbol: str) -> list[dict]:
+        """최근 일봉 목록 [{date: 'YYYYMMDD', close: int}] (과거 -> 최신 순, 최대 100개).
 
-        MACD(12/26/9) 계산에 40개 이상이 필요해 기간별 시세 API를 사용한다.
+        MACD 계산에 40개 이상이 필요해 기간별 시세 API를 사용한다.
         """
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
@@ -180,9 +180,16 @@ class KisClient:
                 "FID_ORG_ADJ_PRC": "0",  # 수정주가 반영
             },
         )
-        closes = [int(row["stck_clpr"]) for row in data["output2"] if row.get("stck_clpr")]
-        closes.reverse()  # API는 최신순으로 주므로 과거순으로 뒤집는다
-        return closes
+        candles = [
+            {"date": row["stck_bsop_date"], "close": int(row["stck_clpr"])}
+            for row in data["output2"] if row.get("stck_clpr")
+        ]
+        candles.reverse()  # API는 최신순으로 주므로 과거순으로 뒤집는다
+        return candles
+
+    def get_daily_closes(self, symbol: str) -> list[int]:
+        """최근 일봉 종가 목록 (과거 -> 최신 순, 최대 100개)."""
+        return [c["close"] for c in self.get_daily_candles(symbol)]
 
     # ---------- 주문 ----------
 

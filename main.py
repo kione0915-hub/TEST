@@ -52,7 +52,7 @@ def main() -> None:
             closes = [float(c) for c in client.get_daily_closes(symbol)]
             price = client.get_current_price(symbol)
             closes.append(float(price))
-            analysis = analyze(closes)
+            analysis = analyze(closes, rules.get("params"))
             signal, enabled = decide(analysis, rules)
             print(f"\n[{symbol}] 현재가 {price:,}원 -> 신호: {signal.value}")
             for cond in enabled:

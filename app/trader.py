@@ -57,7 +57,7 @@ class Trader:
         closes = [float(c) for c in self.client.get_daily_closes(symbol)]
         price = self.client.get_current_price(symbol)
         closes.append(float(price))
-        analysis = analyze(closes)
+        analysis = analyze(closes, rules.get("params"))
         signal, enabled = decide(analysis, rules)
         enabled = enabled + price_target_conditions(symbol, price, rules)
         held = holdings.get(symbol, 0)

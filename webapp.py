@@ -24,7 +24,8 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 from app.config import Settings, load_settings
 from app.kis_client import KisApiError, KisClient
 from app.notifier import Notifier
-from app.rules import CONDITIONS, load_rules, save_rules
+from app.indicators import bollinger_series, macd_series, rsi_series
+from app.rules import CONDITIONS, DEFAULT_PARAMS, load_rules, save_rules
 from app.strategy import analyze, decide
 from app.trader import Trader, is_market_open, price_target_conditions
 
@@ -114,7 +115,7 @@ class AppState:
                 closes = [float(c) for c in self.client.get_daily_closes(code)]
                 price = self.client.get_current_price(code)
                 closes.append(float(price))
-                analysis = analyze(closes)
+                analysis = analyze(closes, rules.get("params"))
                 signal, enabled = decide(analysis, rules)
                 enabled = enabled + price_target_conditions(code, price, rules)
                 symbols.append({
@@ -236,6 +237,35 @@ def api_stop():
     return jsonify({"running": False})
 
 
+# 파라미터 검증 범위: key -> (최소, 최대, 정수 여부)
+PARAM_BOUNDS = {
+    "macd_short": (2, 60, True), "macd_long": (5, 200, True), "macd_signal": (2, 60, True),
+    "boll_window": (5, 100, True), "boll_k": (0.5, 4.0, False),
+    "rsi_period": (2, 60, True), "rsi_buy": (5, 50, True), "rsi_sell": (50, 95, True),
+}
+
+
+def _clean_params(data: dict, current: dict) -> dict:
+    params = dict(current)
+    for key, (lo, hi, is_int) in PARAM_BOUNDS.items():
+        if key not in data:
+            continue
+        try:
+            v = float(str(data[key]).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        v = max(lo, min(hi, v))
+        params[key] = int(v) if is_int else round(v, 2)
+    # 논리 오류는 기본값으로 복원 (단기 >= 장기 등)
+    if params["macd_short"] >= params["macd_long"]:
+        params["macd_short"] = DEFAULT_PARAMS["macd_short"]
+        params["macd_long"] = DEFAULT_PARAMS["macd_long"]
+    if params["rsi_buy"] >= params["rsi_sell"]:
+        params["rsi_buy"] = DEFAULT_PARAMS["rsi_buy"]
+        params["rsi_sell"] = DEFAULT_PARAMS["rsi_sell"]
+    return params
+
+
 @app.route("/api/rules", methods=["GET", "POST"])
 def api_rules():
     if request.method == "POST":
@@ -244,6 +274,8 @@ def api_rules():
         for key in CONDITIONS:
             if key in data:
                 rules[key] = bool(data[key])
+        if isinstance(data.get("params"), dict):
+            rules["params"] = _clean_params(data["params"], rules["params"])
         if isinstance(data.get("price_targets"), dict):
             targets = {}
             for code, t in data["price_targets"].items():
@@ -263,6 +295,40 @@ def api_rules():
         "conditions": {k: {"label": label, "side": side}
                        for k, (label, side) in CONDITIONS.items()},
         "symbols": state.settings.symbols if state.configured else [],
+    })
+
+
+@app.route("/api/chart/<code>")
+def api_chart(code: str):
+    """차트용 시계열: 종가 + 볼린저 밴드 + MACD + RSI (최근 60일)."""
+    if not state.configured:
+        return jsonify({"error": "설정이 필요합니다."}), 400
+    if not code.isalnum():
+        return jsonify({"error": "잘못된 종목코드입니다."}), 400
+    p = load_rules()["params"]
+    try:
+        candles = state.client.get_daily_candles(code)
+        price = state.client.get_current_price(code)
+    except KisApiError as e:
+        return jsonify({"error": str(e)}), 500
+
+    closes = [float(c["close"]) for c in candles] + [float(price)]
+    labels = [f"{c['date'][4:6]}/{c['date'][6:8]}" for c in candles] + ["오늘"]
+    upper, middle, lower = bollinger_series(closes, p["boll_window"], p["boll_k"])
+    macd_line, signal_line, hist = macd_series(
+        closes, p["macd_short"], p["macd_long"], p["macd_signal"])
+    rsi_line = rsi_series(closes, p["rsi_period"])
+
+    n = 60  # 최근 60개만 표시
+    rnd = lambda xs, d=1: [round(x, d) if x is not None else None for x in xs[-n:]]
+    return jsonify({
+        "code": code,
+        "labels": labels[-n:],
+        "closes": rnd(closes, 0),
+        "boll_upper": rnd(upper, 0), "boll_middle": rnd(middle, 0), "boll_lower": rnd(lower, 0),
+        "macd": rnd(macd_line), "macd_signal": rnd(signal_line), "macd_hist": rnd(hist),
+        "rsi": rnd(rsi_line),
+        "rsi_buy": p["rsi_buy"], "rsi_sell": p["rsi_sell"],
     })
 
 

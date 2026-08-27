@@ -8,8 +8,8 @@ decide() 는 사용자가 켜 둔 조건(알림 규칙)만으로 매수/매도 �
 from dataclasses import dataclass, field
 from enum import Enum
 
-from app.indicators import bollinger, macd
-from app.rules import CONDITIONS
+from app.indicators import bollinger, macd, rsi
+from app.rules import CONDITIONS, DEFAULT_PARAMS
 
 
 class Signal(Enum):
@@ -33,10 +33,12 @@ class Analysis:
     ok: bool = True  # 데이터 충분 여부
 
 
-def analyze(closes: list[float]) -> Analysis:
+def analyze(closes: list[float], params: dict | None = None) -> Analysis:
     """일봉 종가 목록(과거 -> 최신 순, 마지막 값은 현재가)에서 발생한 조건을 찾는다."""
-    m = macd(closes)
-    b = bollinger(closes)
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    m = macd(closes, p["macd_short"], p["macd_long"], p["macd_signal"])
+    b = bollinger(closes, p["boll_window"], p["boll_k"])
+    r = rsi(closes, p["rsi_period"])
     if m is None or b is None:
         return Analysis(ok=False, summary="데이터 부족 (일봉이 충분히 쌓이지 않음)")
 
@@ -57,16 +59,26 @@ def analyze(closes: list[float]) -> Analysis:
         conditions.append(Condition(
             "boll_upper", "sell",
             f"볼린저 상단 돌파 (현재가 {b.price:,.0f} ≥ 상단 {b.upper:,.0f}) — 과매수"))
+    if r is not None:
+        if r <= p["rsi_buy"]:
+            conditions.append(Condition(
+                "rsi_low", "buy", f"RSI 과매도 (RSI {r:.0f} ≤ {p['rsi_buy']})"))
+        elif r >= p["rsi_sell"]:
+            conditions.append(Condition(
+                "rsi_high", "sell", f"RSI 과매수 (RSI {r:.0f} ≥ {p['rsi_sell']})"))
 
+    rsi_text = f"{r:.0f}" if r is not None else "-"
     summary = (
         f"MACD {m.macd:,.0f} / 시그널 {m.signal:,.0f} / 히스토그램 {m.histogram:,.0f}\n"
-        f"볼린저 상단 {b.upper:,.0f} / 중심 {b.middle:,.0f} / 하단 {b.lower:,.0f}"
+        f"볼린저 상단 {b.upper:,.0f} / 중심 {b.middle:,.0f} / 하단 {b.lower:,.0f}\n"
+        f"RSI {rsi_text}"
     )
     values = {
         "macd": round(m.macd, 1), "macd_signal": round(m.signal, 1),
         "macd_hist": round(m.histogram, 1),
         "boll_upper": round(b.upper), "boll_middle": round(b.middle),
         "boll_lower": round(b.lower),
+        "rsi": round(r, 1) if r is not None else None,
     }
     return Analysis(conditions=conditions, summary=summary, values=values)
 

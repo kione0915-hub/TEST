@@ -23,6 +23,28 @@
     <button class="btn-blue" id="btn-save-rules" onclick="saveRules()">조건 저장</button>
   </div>
   <div id="rule-checks" class="row" style="gap: 4px 22px;"></div>
+
+  <h2 style="margin: 16px 0 6px;">지표 설정 <span class="hint muted">— 계산 기간/기준을 원하는 값으로 변경</span></h2>
+  <div class="row" style="gap: 14px 26px; align-items: flex-end;">
+    <div>
+      <span class="muted" style="font-size:12.5px; font-weight:600;">MACD (단기 / 장기 / 시그널)</span><br>
+      <input type="number" id="p-macd_short" min="2" max="60" style="width:64px">
+      <input type="number" id="p-macd_long" min="5" max="200" style="width:64px">
+      <input type="number" id="p-macd_signal" min="2" max="60" style="width:64px">
+    </div>
+    <div>
+      <span class="muted" style="font-size:12.5px; font-weight:600;">볼린저 (기간 / 표준편차 배수)</span><br>
+      <input type="number" id="p-boll_window" min="5" max="100" style="width:64px">
+      <input type="number" id="p-boll_k" min="0.5" max="4" step="0.1" style="width:64px">
+    </div>
+    <div>
+      <span class="muted" style="font-size:12.5px; font-weight:600;">RSI (기간 / 과매도≤ / 과매수≥)</span><br>
+      <input type="number" id="p-rsi_period" min="2" max="60" style="width:64px">
+      <input type="number" id="p-rsi_buy" min="5" max="50" style="width:64px">
+      <input type="number" id="p-rsi_sell" min="50" max="95" style="width:64px">
+    </div>
+  </div>
+
   <h2 style="margin: 16px 0 6px;">목표가 알림 <span class="hint muted">— 비워두면 사용 안 함</span></h2>
   <table id="target-table">
     <thead><tr><th>종목코드</th><th>이 가격 이상이면 알림 (원)</th><th>이 가격 이하면 알림 (원)</th></tr></thead>
@@ -46,10 +68,22 @@
 </div>
 
 <div class="card">
+  <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+    <h2 style="margin:0">📊 차트 <span class="muted" id="chart-title"></span></h2>
+    <div class="row" id="chart-symbols"></div>
+  </div>
+  <p class="muted" id="chart-hint">종목 버튼을 누르면 최근 60일 차트가 표시됩니다.</p>
+  <div style="position:relative; height:250px;"><canvas id="chart-price"></canvas></div>
+  <div style="position:relative; height:140px; margin-top:8px;"><canvas id="chart-macd"></canvas></div>
+  <div style="position:relative; height:120px; margin-top:8px;"><canvas id="chart-rsi"></canvas></div>
+</div>
+
+<div class="card">
   <h2>실행 로그</h2>
   <div id="logs"></div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -112,6 +146,9 @@ async function testAlert() {
   alert(d.ok ? "테스트 알림을 보냈습니다. 휴대폰 텔레그램을 확인하세요!" : d.error);
 }
 
+const PARAM_KEYS = ["macd_short","macd_long","macd_signal","boll_window","boll_k",
+                    "rsi_period","rsi_buy","rsi_sell"];
+
 async function loadRules() {
   const r = await fetch("/api/rules");
   const d = await r.json();
@@ -122,6 +159,7 @@ async function loadRules() {
       <input type="checkbox" id="rule-${key}" ${d.rules[key] ? "checked" : ""}>
       <span class="${sideCls(c.side)}" style="font-size:12px">[${sideLabel(c.side)}]</span> ${c.label}
     </label>`).join("");
+  PARAM_KEYS.forEach(k => { const el = $("p-" + k); if (el) el.value = d.rules.params[k]; });
   const targets = d.rules.price_targets || {};
   $("target-rows").innerHTML = d.symbols.map(code => {
     const t = targets[code] || {};
@@ -131,14 +169,18 @@ async function loadRules() {
       <td><input type="text" class="target-input" data-code="${code}" data-kind="below"
                  value="${t.below ?? ""}" placeholder="예: 65000" style="max-width:160px"></td></tr>`;
   }).join("");
+  $("chart-symbols").innerHTML = d.symbols.map(code =>
+    `<button class="btn-plain chart-btn" data-code="${code}" onclick="loadChart('${code}')">${code}</button>`
+  ).join("");
 }
 
 async function saveRules() {
   const btn = $("btn-save-rules");
-  const payload = { price_targets: {} };
+  const payload = { price_targets: {}, params: {} };
   document.querySelectorAll("#rule-checks input[type=checkbox]").forEach(cb => {
     payload[cb.id.replace("rule-", "")] = cb.checked;
   });
+  PARAM_KEYS.forEach(k => { const el = $("p-" + k); if (el && el.value) payload.params[k] = el.value; });
   document.querySelectorAll(".target-input").forEach(inp => {
     const code = inp.dataset.code;
     payload.price_targets[code] = payload.price_targets[code] || {};
@@ -146,17 +188,95 @@ async function saveRules() {
   });
   btn.disabled = true; btn.textContent = "저장 중...";
   try {
-    await fetch("/api/rules", {method: "POST",
+    const r = await fetch("/api/rules", {method: "POST",
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const d = await r.json();
+    // 서버가 보정한 값(범위 초과 등)을 입력칸에 되돌려 보여준다
+    PARAM_KEYS.forEach(k => { const el = $("p-" + k); if (el) el.value = d.rules.params[k]; });
     btn.textContent = "저장됨 ✓";
     setTimeout(() => { btn.textContent = "조건 저장"; btn.disabled = false; }, 1200);
+    if (currentChartCode) loadChart(currentChartCode);  // 바뀐 파라미터로 차트 다시 그림
   } catch (e) {
     alert("저장 실패: " + e); btn.textContent = "조건 저장"; btn.disabled = false;
   }
 }
 
+// ---------- 차트 ----------
+let currentChartCode = null;
+let charts = {};  // Chart.js 인스턴스
+
+const INK = "#1c2333", MUTED = "#6b7280", GRID = "rgba(107,114,128,.12)";
+const baseOpts = {
+  responsive: true, maintainAspectRatio: false, animation: false,
+  interaction: { mode: "index", intersect: false },
+  plugins: {
+    legend: { labels: { color: MUTED, boxWidth: 14, font: { size: 11 } } },
+    tooltip: { mode: "index", intersect: false },
+  },
+  scales: {
+    x: { ticks: { color: MUTED, maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
+    y: { ticks: { color: MUTED, font: { size: 10 } }, grid: { color: GRID } },
+  },
+};
+
+function makeChart(id, config) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id).getContext("2d"), config);
+}
+
+async function loadChart(code) {
+  if (typeof Chart === "undefined") {
+    $("chart-hint").textContent = "차트 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.";
+    return;
+  }
+  currentChartCode = code;
+  document.querySelectorAll(".chart-btn").forEach(b => {
+    b.className = b.dataset.code === code ? "btn-blue chart-btn" : "btn-plain chart-btn";
+  });
+  $("chart-hint").textContent = "불러오는 중...";
+  const r = await fetch("/api/chart/" + code);
+  const d = await r.json();
+  if (d.error) { $("chart-hint").textContent = "차트 조회 실패: " + d.error; return; }
+  $("chart-hint").textContent = "";
+  $("chart-title").textContent = `— ${code} 최근 ${d.labels.length}일`;
+
+  makeChart("chart-price", { type: "line", data: { labels: d.labels, datasets: [
+    { label: "종가", data: d.closes, borderColor: INK, borderWidth: 2,
+      pointRadius: 0, tension: 0.15 },
+    { label: "볼린저 상단", data: d.boll_upper, borderColor: "#9ca3af", borderWidth: 1,
+      pointRadius: 0, fill: 3, backgroundColor: "rgba(156,163,175,.10)" },
+    { label: "볼린저 중심", data: d.boll_middle, borderColor: "#9ca3af", borderWidth: 1,
+      borderDash: [4, 4], pointRadius: 0 },
+    { label: "볼린저 하단", data: d.boll_lower, borderColor: "#9ca3af", borderWidth: 1,
+      pointRadius: 0 },
+  ]}, options: baseOpts });
+
+  makeChart("chart-macd", { type: "bar", data: { labels: d.labels, datasets: [
+    { type: "line", label: "MACD", data: d.macd, borderColor: "#2563eb",
+      borderWidth: 2, pointRadius: 0, tension: 0.15 },
+    { type: "line", label: "시그널", data: d.macd_signal, borderColor: "#f59e0b",
+      borderWidth: 2, pointRadius: 0, tension: 0.15 },
+    { label: "히스토그램", data: d.macd_hist,
+      backgroundColor: d.macd_hist.map(v => (v ?? 0) >= 0 ? "rgba(220,38,38,.55)" : "rgba(37,99,235,.45)") },
+  ]}, options: baseOpts });
+
+  const guide = v => d.labels.map(() => v);
+  makeChart("chart-rsi", { type: "line", data: { labels: d.labels, datasets: [
+    { label: "RSI", data: d.rsi, borderColor: "#7c3aed", borderWidth: 2,
+      pointRadius: 0, tension: 0.15 },
+    { label: `과매수 ${d.rsi_sell}`, data: guide(d.rsi_sell), borderColor: "#9ca3af",
+      borderWidth: 1, borderDash: [4, 4], pointRadius: 0 },
+    { label: `과매도 ${d.rsi_buy}`, data: guide(d.rsi_buy), borderColor: "#9ca3af",
+      borderWidth: 1, borderDash: [4, 4], pointRadius: 0 },
+  ]}, options: { ...baseOpts, scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y, min: 0, max: 100 } } } });
+}
+
 poll();
-loadRules();
+loadRules().then(() => {
+  const first = document.querySelector(".chart-btn");
+  if (first) loadChart(first.dataset.code);  // 첫 종목 차트 자동 표시
+});
 setInterval(poll, 3000);
 </script>
 {% endblock %}
